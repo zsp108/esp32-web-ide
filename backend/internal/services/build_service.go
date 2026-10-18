@@ -189,8 +189,8 @@ echo "[Custom Command] 命令执行成功，正在收集编译产物..."
 OUT_DIR="${OUTPUT_DIR:-/output}"
 mkdir -p "$OUT_DIR"
 
-# 查找所有生成的 bin 文件并复制到 /output
-find "$SRC_DIR" -maxdepth 4 -type f -name "*.bin" -exec cp {} "$OUT_DIR/" \; 2>/dev/null || true
+# 查找所有生成的 bin 文件 (包括 $SRC_DIR, /src, 以及 arduino-cli 默认输出的 /tmp) 并复制到 /output
+find "$SRC_DIR" /src /tmp -maxdepth 6 -type f -name "*.bin" ! -name "custom_compile.sh" -exec cp -f {} "$OUT_DIR/" \; 2>/dev/null || true
 
 # 若包含 flash_project_args，尝试合成单个 merged-firmware.bin
 if [ -f "$SRC_DIR/build/flash_project_args" ]; then
@@ -208,6 +208,13 @@ fi
 
 echo "[Custom Command] 产物归档完毕，/output 目录列表:"
 ls -lh "$OUT_DIR/" 2>/dev/null || true
+
+BIN_COUNT=$(find "$OUT_DIR" -maxdepth 2 -type f -name "*.bin" 2>/dev/null | wc -l)
+if [ "$BIN_COUNT" -eq 0 ]; then
+    echo "[ERROR] [Custom Command] 编译命令虽已执行，但未能在项目或输出目录中检测到任何生成的 .bin 固件！"
+    echo "💡 提示：若使用 arduino-cli，请在命令中添加 --output-dir /output 或确保编译生成了固件"
+    exit 1
+fi
 `, customCmd, customCmd)
 
 		if err := os.WriteFile(customScriptPath, []byte(scriptContent), 0755); err != nil {
@@ -343,11 +350,36 @@ ls -lh "$OUT_DIR/" 2>/dev/null || true
 
 	// 4. 上传编译产物：优先查找 merged-firmware.bin，回退到 firmware.bin
 	binPath := resolveBinPath(srcDir, outputDir, build.Framework)
+	binInfo, statErr := os.Stat(binPath)
+	if statErr != nil || binInfo.Size() == 0 {
+		errText := "未在项目输出目录中找到有效的 .bin 固件产物，编译失败"
+		s.logger.Error(errText, zap.String("build_id", buildID), zap.String("bin_path", binPath))
+		s.db.DB.Model(&build).Updates(map[string]interface{}{
+			"status":      models.BuildStatusFailed,
+			"build_log":   fullLog + "\n[ERROR] " + errText,
+			"duration_ms": durationMs,
+			"error_msg":   errText,
+		})
+		s.publishLog(buildID, "[ERROR] "+errText)
+		s.publishDone(buildID, "failed", "", errText)
+		return errors.New(errText)
+	}
+
 	binName := filepath.Base(binPath)
 	binKey := fmt.Sprintf("builds/%s/%s", buildID, binName)
 	binSize, uploadErr := s.uploadBin(ctx, binPath, binKey)
-	if uploadErr != nil {
-		s.logger.Warn("上传 bin 失败，编译仍标记为成功", zap.Error(uploadErr))
+	if uploadErr != nil || binSize == 0 {
+		errText := fmt.Sprintf("固件产物存储失败: %v", uploadErr)
+		s.logger.Error(errText, zap.String("build_id", buildID))
+		s.db.DB.Model(&build).Updates(map[string]interface{}{
+			"status":      models.BuildStatusFailed,
+			"build_log":   fullLog + "\n[ERROR] " + errText,
+			"duration_ms": durationMs,
+			"error_msg":   errText,
+		})
+		s.publishLog(buildID, "[ERROR] "+errText)
+		s.publishDone(buildID, "failed", "", errText)
+		return uploadErr
 	}
 
 	// 5. 更新编译记录为成功

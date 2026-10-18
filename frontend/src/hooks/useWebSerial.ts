@@ -59,10 +59,10 @@ export function useWebSerial() {
       let flashSizeStr = '未知'
       let flashSizeBytes: number | undefined
       try {
-        const flashBytes = await esploader.getFlashSize()
-        if (flashBytes) {
-          flashSizeBytes = flashBytes
-          flashSizeStr = `${Math.round(flashBytes / (1024 * 1024))}MB`
+        const flashKb = await esploader.getFlashSize()
+        if (typeof flashKb === 'number' && flashKb > 0) {
+          flashSizeBytes = flashKb * 1024
+          flashSizeStr = flashKb >= 1024 ? `${Math.round(flashKb / 1024)}MB` : `${flashKb}KB`
         }
       } catch {}
 
@@ -192,10 +192,10 @@ export function useWebSerial() {
         let flashSizeStr = '未知'
         let flashSizeBytes: number | undefined
         try {
-          const bytes = await activeLoader.getFlashSize()
-          if (bytes) {
-            flashSizeBytes = bytes
-            flashSizeStr = `${Math.round(bytes / (1024 * 1024))}MB`
+          const flashKb = await activeLoader.getFlashSize()
+          if (typeof flashKb === 'number' && flashKb > 0) {
+            flashSizeBytes = flashKb * 1024
+            flashSizeStr = flashKb >= 1024 ? `${Math.round(flashKb / 1024)}MB` : `${flashKb}KB`
           }
         } catch {}
         let macStr: string | undefined

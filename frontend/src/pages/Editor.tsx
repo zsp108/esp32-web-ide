@@ -591,19 +591,9 @@ export default function EditorPage() {
       return
     }
 
-    // 硬件兼容性安全门禁：当芯片架构完全不同时进行弹窗强预警
-    if (device && compatibility && !compatibility.isMatched) {
-      const confirmed = window.confirm(
-        `⚠️ 硬件芯片架构不匹配警告！\n\n` +
-        `• 项目目标芯片: ${compatibility.expectedChip}\n` +
-        `• 实际连接硬件: ${compatibility.detectedChip}\n\n` +
-        `两款芯片 CPU 指令集架构不同，强行刷入将导致芯片崩溃或无法启动！\n\n` +
-        `是否确定仍要强行刷写？`
-      )
-      if (!confirmed) {
-        setRightPanel('device')
-        return
-      }
+    if (latestBuild?.bin_size_bytes === 0) {
+      alert('当前编译记录未检测到有效的固件产物 (.bin)，请先重新点击【开始编译】！')
+      return
     }
 
     setRightPanel('flashLogs')
@@ -611,8 +601,8 @@ export default function EditorPage() {
       appendFlashLog({ level: 'info', text: '==================== 开始固件刷写 ====================' })
       if (device && compatibility) {
         appendFlashLog({
-          level: compatibility.isMatched ? 'info' : 'warning',
-          text: `[硬件预检] 编译目标: ${compatibility.expectedChip} ⟷ 连接设备: ${compatibility.detectedChip} (${compatibility.summary})`,
+          level: 'info',
+          text: `[设备信息] 目标芯片: ${compatibility.expectedChip} ⟷ 连接设备: ${compatibility.detectedChip} (Flash: ${compatibility.detectedFlashSize})`,
         })
       }
       await flashFirmware(
