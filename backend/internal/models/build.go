@@ -27,6 +27,7 @@ type BuildRecord struct {
 	Status        BuildStatus `gorm:"not null;default:'pending'" json:"status"`
 	Framework     string      `json:"framework"` // arduino | espidf
 	BoardFQBN     string      `json:"board_fqbn"`
+	CustomCommand string      `json:"custom_command,omitempty"` // 自定义编译命令
 	BinStorageKey string      `json:"bin_storage_key"` // 存储后端中的对象键
 	BinSizeBytes  int64       `json:"bin_size_bytes"`
 	FlashPct      float64     `json:"flash_pct"` // Flash 使用百分比

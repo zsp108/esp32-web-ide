@@ -45,8 +45,11 @@ func NewRouter(cfg *config.Config, database *db.Database, storage services.Stora
 		// 板型列表
 		v1.GET("/boards", boardsHandler.List)
 
-		// Git URL 导入
+		// Git URL 导入与压缩包导入 (tar / tar.gz / zip)
 		v1.POST("/import/git", importHandler.ImportFromGit)
+		v1.POST("/import/archive", importHandler.ImportArchive)
+		v1.POST("/projects/import-tar", importHandler.ImportArchive)
+		v1.POST("/projects/import-archive", importHandler.ImportArchive)
 
 		// 项目 CRUD
 		projects := v1.Group("/projects")

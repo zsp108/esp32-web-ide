@@ -17,6 +17,7 @@ type Project struct {
 	Framework    string        `gorm:"not null" json:"framework"` // arduino | espidf
 	BoardFQBN    string        `gorm:"not null" json:"board_fqbn"`
 	SessionToken string        `gorm:"index;not null" json:"session_token"` // 浏览器 localStorage UUID
+	CustomCommand string       `json:"custom_command"`                      // 自定义编译命令
 	CreatedAt    time.Time     `json:"created_at"`
 	UpdatedAt    time.Time     `json:"updated_at"`
 	Files        []ProjectFile `gorm:"foreignKey:ProjectID" json:"files,omitempty"`

@@ -140,6 +140,80 @@ func (s *BuildService) Run(ctx context.Context, buildID, projectID string) error
 	s.publishProgress(buildID, 20, "启动沙箱容器编译...")
 	s.publishLog(buildID, fmt.Sprintf("[INFO] 使用镜像: %s", image))
 
+	var entrypoint []string
+	customCmd := strings.TrimSpace(build.CustomCommand)
+	if customCmd != "" {
+		customScriptPath := filepath.Join(srcDir, "custom_compile.sh")
+		scriptContent := fmt.Sprintf(`#!/bin/bash
+set -e
+
+find /src -name "._*" -delete 2>/dev/null || true
+
+# 自动挂载预置离线组件
+if [ ! -d "/src/third_party/lvgl" ] && [ -d "/opt/third_party/lvgl" ]; then
+    mkdir -p /src/third_party
+    cp -r /opt/third_party/lvgl /src/third_party/lvgl 2>/dev/null || ln -s /opt/third_party/lvgl /src/third_party/lvgl
+fi
+
+if [ -d "/src/platforms/esp32" ] && [ ! -d "/src/platforms/esp32/managed_components" ] && [ -d "/opt/managed_components" ]; then
+    cp -r /opt/managed_components /src/platforms/esp32/managed_components 2>/dev/null || ln -s /opt/managed_components /src/platforms/esp32/managed_components
+fi
+
+export IDF_PATH=/opt/esp-idf
+export IDF_TOOLS_PATH=/root/.espressif
+if [ -f /opt/esp-idf/export.sh ]; then
+    . /opt/esp-idf/export.sh >/dev/null 2>&1 || true
+fi
+
+SRC_DIR="${PROJECT_DIR:-/src}"
+cd "$SRC_DIR"
+echo "[Custom Command] 工作目录: $PWD"
+echo "[Custom Command] 执行自定义编译命令:"
+echo "--------------------------------------------------"
+echo "$ %s"
+echo "--------------------------------------------------"
+
+%s
+
+EXIT_CODE=$?
+if [ $EXIT_CODE -ne 0 ]; then
+    echo "[Custom Command] 命令执行失败，退出码: $EXIT_CODE"
+    exit $EXIT_CODE
+fi
+
+echo "[Custom Command] 命令执行成功，正在收集编译产物..."
+OUT_DIR="${OUTPUT_DIR:-/output}"
+mkdir -p "$OUT_DIR"
+
+# 查找所有生成的 bin 文件并复制到 /output
+find "$SRC_DIR" -maxdepth 4 -type f -name "*.bin" -exec cp {} "$OUT_DIR/" \; 2>/dev/null || true
+
+# 若包含 flash_project_args，尝试合成单个 merged-firmware.bin
+if [ -f "$SRC_DIR/build/flash_project_args" ]; then
+    echo "[Custom Command] 检测到 flash_project_args，正在生成合并固件..."
+    cd "$SRC_DIR/build"
+    TARGET="${IDF_TARGET:-esp32s3}"
+    FLASH_SIZE="${FLASH_SIZE:-4MB}"
+    esptool.py --chip "$TARGET" merge_bin \
+        -o "$OUT_DIR/merged-firmware.bin" \
+        --flash_mode dio \
+        --flash_freq 80m \
+        --flash_size "$FLASH_SIZE" \
+        @flash_project_args 2>&1 || true
+fi
+
+echo "[Custom Command] 产物归档完毕，/output 目录列表:"
+ls -lh "$OUT_DIR/" 2>/dev/null || true
+`, customCmd, customCmd)
+
+		if err := os.WriteFile(customScriptPath, []byte(scriptContent), 0755); err != nil {
+			return s.failBuild(&build, buildID, fmt.Errorf("创建自定义编译脚本失败: %w", err))
+		}
+		entrypoint = []string{"/bin/bash", "/src/custom_compile.sh"}
+		cmd = nil
+		s.publishLog(buildID, fmt.Sprintf("[INFO] 启用自定义编译命令模式: %s", customCmd))
+	}
+
 	// 收集编译日志
 	var logBuf strings.Builder
 	lastPercent := 25
@@ -148,6 +222,7 @@ func (s *BuildService) Run(ctx context.Context, buildID, projectID string) error
 
 	opts := BuildOptions{
 		Image:          image,
+		Entrypoint:     entrypoint,
 		Cmd:            cmd,
 		Env:            env,
 		TimeoutSec:     s.cfg.BuildTimeoutSeconds,
@@ -163,7 +238,12 @@ func (s *BuildService) Run(ctx context.Context, buildID, projectID string) error
 			s.publishLog(buildID, line)
 
 			lower := strings.ToLower(line)
-			if strings.Contains(line, "[LIBRARY_DOWNLOAD]") || strings.Contains(line, "Downloading") || strings.Contains(line, "Installing") {
+			if strings.Contains(line, "[Custom Command]") {
+				if lastPercent < 40 {
+					lastPercent = 40
+					s.publishProgress(buildID, 40, "正在执行自定义编译命令...")
+				}
+			} else if strings.Contains(line, "[LIBRARY_DOWNLOAD]") || strings.Contains(line, "Downloading") || strings.Contains(line, "Installing") {
 				stageText := line
 				if idx := strings.Index(line, "[LIBRARY_DOWNLOAD]"); idx != -1 {
 					stageText = strings.TrimSpace(line[idx+len("[LIBRARY_DOWNLOAD]"):])

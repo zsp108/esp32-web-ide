@@ -19,10 +19,11 @@ const TaskCompile = "build:compile"
 
 // CompilePayload 是编译任务的参数负载。
 type CompilePayload struct {
-	BuildID   string `json:"build_id"`
-	ProjectID string `json:"project_id"`
-	Framework string `json:"framework"`
-	BoardFQBN string `json:"board_fqbn"`
+	BuildID       string `json:"build_id"`
+	ProjectID     string `json:"project_id"`
+	Framework     string `json:"framework"`
+	BoardFQBN     string `json:"board_fqbn"`
+	CustomCommand string `json:"custom_command,omitempty"`
 }
 
 // CompileTaskHandler 处理编译任务。

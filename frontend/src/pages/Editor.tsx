@@ -161,6 +161,8 @@ export default function EditorPage() {
   const [saveSuccess, setSaveSuccess] = useState(false)
   const [fileFilter, setFileFilter] = useState('')
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({})
+  const [buildMode, setBuildMode] = useState<'auto' | 'custom'>('auto')
+  const [customCommand, setCustomCommand] = useState<string>('')
 
   const { data: projectFiles = [], refetch: refetchFiles } = useQuery<{ id: string; path: string; size_bytes: number }[]>({
     queryKey: ['files', projectId],
@@ -230,6 +232,14 @@ export default function EditorPage() {
     queryFn: () => projectsApi.get(projectId!),
     enabled: !!projectId,
   })
+
+  // 当项目信息加载后，若配置了自定义命令则自动同步
+  useEffect(() => {
+    if (project?.custom_command) {
+      setCustomCommand(project.custom_command)
+      setBuildMode('custom')
+    }
+  }, [project?.custom_command])
 
   const { data: boards = [] } = useQuery({
     queryKey: ['boards'],
@@ -350,29 +360,39 @@ export default function EditorPage() {
       framework: project?.framework ?? 'arduino',
       board: currentBoard,
       board_fqbn: currentBoard,
+      custom_cmd: buildMode === 'custom' ? customCommand.trim() : '',
     }),
     onMutate: () => {
       setBuildStatus('building')
       setBuildProgress(10)
-      setBuildStage('正在提交编译任务至后台...')
+      setBuildStage(buildMode === 'custom' ? '正在提交自定义命令编译任务...' : '正在提交编译任务至后台...')
       setLogs([])
       setBinUrl(null)
       setRightPanel('build')
-      appendLog({ level: 'info', text: '正在提交编译任务至后台...' })
+      appendLog({
+        level: 'info',
+        text: buildMode === 'custom'
+          ? `[INFO] 正在提交自定义命令编译任务: ${customCommand.trim()}`
+          : '正在提交编译任务至后台...',
+      })
     },
     onSuccess: (data: { id: string }) => {
       setBuildId(data.id)
       appendLog({ level: 'info', text: `编译任务已在后台启动: ${data.id}` })
       refetchBuilds()
     },
-    onError: () => {
+    onError: (err: any) => {
       setBuildStatus('failed')
       setBuildStage('提交任务失败')
-      appendLog({ level: 'error', text: '无法提交编译任务，请检查后端连接' })
+      appendLog({ level: 'error', text: `无法提交编译任务: ${err.response?.data?.error || err.message}` })
     },
   })
 
   const handleBuild = async () => {
+    if (buildMode === 'custom' && !customCommand.trim()) {
+      alert('请输入要执行的自定义编译命令，例如: idf.py build 或 arduino-cli compile ...')
+      return
+    }
     if (activeFile && fileContent) {
       await saveFileMutation.mutateAsync()
     }
@@ -1025,6 +1045,10 @@ export default function EditorPage() {
                   setRightPanel('flash')
                   handleFlash()
                 }}
+                buildMode={buildMode}
+                onChangeBuildMode={setBuildMode}
+                customCommand={customCommand}
+                onChangeCustomCommand={setCustomCommand}
               />
             )}
 
@@ -1242,6 +1266,10 @@ function BuildPanel({
   flashing,
   flashProgress,
   onFlashDirect,
+  buildMode,
+  onChangeBuildMode,
+  customCommand,
+  onChangeCustomCommand,
 }: {
   status: 'idle' | 'building' | 'success' | 'failed' | 'cancelled'
   progress: number
@@ -1259,9 +1287,23 @@ function BuildPanel({
   flashing?: boolean
   flashProgress?: number
   onFlashDirect?: () => void
+  buildMode: 'auto' | 'custom'
+  onChangeBuildMode: (mode: 'auto' | 'custom') => void
+  customCommand: string
+  onChangeCustomCommand: (cmd: string) => void
 }) {
   const boardObj = boards.find((b: any) => (b.fqbn || b.id) === currentBoard)
   const boardName = boardObj?.name || currentBoard
+
+  // 推荐命令列表
+  const quickCommands = framework === 'espidf' ? [
+    'idf.py build',
+    'idf.py reconfigure build',
+    'idf.py fullclean && idf.py build',
+  ] : [
+    `arduino-cli compile --fqbn ${currentBoard} .`,
+    `arduino-cli compile --fqbn ${currentBoard} --clean .`,
+  ]
 
   return (
     <div className="space-y-4">
@@ -1428,6 +1470,12 @@ function BuildPanel({
                 {framework || 'arduino'}
               </span>
             </div>
+            <div className="flex justify-between items-center">
+              <span>编译方式</span>
+              <span className="text-gray-300 font-mono text-[11px] truncate max-w-[150px]" title={latestBuild?.custom_command || '自动编译'}>
+                {latestBuild?.custom_command ? `自定义: ${latestBuild.custom_command}` : '默认自动编译'}
+              </span>
+            </div>
             {latestBuild?.created_at && (
               <div className="flex justify-between items-center">
                 <span>提交时间</span>
@@ -1444,6 +1492,7 @@ function BuildPanel({
       <div className="bg-dark-800 rounded-lg p-3 border border-dark-600 space-y-3">
         <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">编译设置</h4>
 
+        {/* 开发板选择 */}
         <div>
           <label className="block text-xs text-gray-400 mb-1.5 font-medium">目标开发板</label>
           <select
@@ -1467,6 +1516,79 @@ function BuildPanel({
             })}
           </select>
         </div>
+
+        {/* 编译模式切换 */}
+        <div>
+          <label className="block text-xs text-gray-400 mb-1.5 font-medium">编译执行方式</label>
+          <div className="grid grid-cols-2 gap-1.5 bg-dark-900 p-1 rounded-md border border-dark-600">
+            <button
+              type="button"
+              disabled={status === 'building'}
+              onClick={() => onChangeBuildMode('auto')}
+              className={`text-xs py-1.5 px-2 rounded font-medium transition-colors ${
+                buildMode === 'auto'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'text-gray-400 hover:text-gray-200'
+              }`}
+            >
+              默认自动编译
+            </button>
+            <button
+              type="button"
+              disabled={status === 'building'}
+              onClick={() => onChangeBuildMode('custom')}
+              className={`text-xs py-1.5 px-2 rounded font-medium transition-colors ${
+                buildMode === 'custom'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'text-gray-400 hover:text-gray-200'
+              }`}
+            >
+              自定义编译命令
+            </button>
+          </div>
+        </div>
+
+        {/* 自定义命令编辑框 */}
+        {buildMode === 'custom' && (
+          <div className="space-y-2 bg-dark-900/60 p-2.5 rounded-md border border-dark-600">
+            <div className="flex items-center justify-between">
+              <label className="text-[11px] font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-1">
+                <Terminal size={11} className="text-blue-400" />
+                自定义执行命令
+              </label>
+              <span className="text-[10px] text-gray-500">容器内 /src 运行</span>
+            </div>
+
+            <div className="relative">
+              <textarea
+                rows={2}
+                value={customCommand}
+                onChange={e => onChangeCustomCommand(e.target.value)}
+                disabled={status === 'building'}
+                placeholder={framework === 'espidf' ? '例如: idf.py build' : '例如: arduino-cli compile --fqbn ... .'}
+                className="w-full bg-dark-950 border border-dark-500 rounded p-2 text-xs font-mono text-green-300 placeholder-gray-600 focus:outline-none focus:border-blue-500 disabled:opacity-50 resize-none leading-relaxed"
+              />
+            </div>
+
+            {/* 常用命令快捷填充 */}
+            <div className="space-y-1">
+              <span className="text-[10px] text-gray-400">快速填入推荐命令:</span>
+              <div className="flex flex-wrap gap-1">
+                {quickCommands.map(cmd => (
+                  <button
+                    key={cmd}
+                    type="button"
+                    disabled={status === 'building'}
+                    onClick={() => onChangeCustomCommand(cmd)}
+                    className="text-[10px] font-mono bg-dark-800 hover:bg-dark-700 text-gray-300 hover:text-white px-2 py-0.5 rounded border border-dark-600 transition-colors"
+                  >
+                    {cmd}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
 
         <div>
           {status === 'building' ? (
@@ -1497,10 +1619,16 @@ function BuildPanel({
           ) : (
             <button
               onClick={onBuild}
-              className="w-full flex items-center justify-center gap-2 bg-green-700 hover:bg-green-600 text-white text-sm py-2 rounded-md font-medium transition-colors"
+              className={`w-full flex items-center justify-center gap-2 text-white text-sm py-2 rounded-md font-medium transition-colors ${
+                buildMode === 'custom'
+                  ? 'bg-blue-600 hover:bg-blue-500'
+                  : 'bg-green-700 hover:bg-green-600'
+              }`}
             >
               <Play size={14} />
-              {status === 'success' || status === 'failed' || status === 'cancelled' ? '重新编译' : '开始编译'}
+              {buildMode === 'custom'
+                ? (status === 'success' || status === 'failed' || status === 'cancelled' ? '重新执行自定义编译' : '执行自定义编译')
+                : (status === 'success' || status === 'failed' || status === 'cancelled' ? '重新编译' : '开始编译')}
             </button>
           )}
         </div>

@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Cpu, Folder, ChevronRight, Loader2, AlertCircle, GitBranch, CheckCircle2, XCircle, Square, Trash2 } from 'lucide-react'
+import { Plus, Cpu, Folder, ChevronRight, Loader2, AlertCircle, GitBranch, CheckCircle2, XCircle, Square, Trash2, UploadCloud, FileArchive } from 'lucide-react'
 import { projectsApi, boardsApi, importApi } from '../api/client'
 
 interface Board {
@@ -34,6 +34,7 @@ export default function HomePage() {
   const queryClient = useQueryClient()
   const [showCreate, setShowCreate] = useState(false)
   const [showImport, setShowImport] = useState(false)
+  const [showTarImport, setShowTarImport] = useState(false)
 
   const [form, setForm] = useState({
     name: '',
@@ -50,6 +51,16 @@ export default function HomePage() {
     board_fqbn: 'esp32:esp32:esp32',
   })
   const [importError, setImportError] = useState<string | null>(null)
+
+  const [tarFile, setTarFile] = useState<File | null>(null)
+  const [tarForm, setTarForm] = useState({
+    name: '',
+    framework: 'auto',
+    board_fqbn: 'esp32:esp32:esp32',
+    custom_cmd: '',
+  })
+  const [tarImportError, setTarImportError] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const { data: projects = [], isLoading: loadingProjects } = useQuery<Project[]>({
     queryKey: ['projects'],
@@ -91,6 +102,22 @@ export default function HomePage() {
     },
   })
 
+  const tarImportMutation = useMutation({
+    mutationFn: (formData: FormData) => importApi.fromArchive(formData),
+    onSuccess: (data: { project_id?: string; id?: string }) => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] })
+      setShowTarImport(false)
+      const pid = data.project_id || data.id
+      if (pid) {
+        navigate(`/editor/${pid}`)
+      }
+    },
+    onError: (err: any) => {
+      const msg = err.response?.data?.error || err.message || '导入压缩包失败，请检查文件格式是否有效'
+      setTarImportError(msg)
+    },
+  })
+
   const deleteMutation = useMutation({
     mutationFn: projectsApi.delete,
     onSuccess: () => {
@@ -119,6 +146,38 @@ export default function HomePage() {
     })
   }
 
+  const handleTarFileSelect = (file: File) => {
+    setTarFile(file)
+    setTarImportError(null)
+    if (!tarForm.name) {
+      let base = file.name
+      for (const ext of ['.tar.gz', '.tgz', '.tar', '.zip']) {
+        if (base.toLowerCase().endsWith(ext)) {
+          base = base.slice(0, base.length - ext.length)
+          break
+        }
+      }
+      setTarForm(prev => ({ ...prev, name: base }))
+    }
+  }
+
+  const handleTarImport = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!tarFile) {
+      setTarImportError('请先选择或拖拽项目压缩包文件')
+      return
+    }
+    setTarImportError(null)
+    const formData = new FormData()
+    formData.append('file', tarFile)
+    if (tarForm.name.trim()) formData.append('name', tarForm.name.trim())
+    if (tarForm.framework) formData.append('framework', tarForm.framework)
+    if (tarForm.board_fqbn) formData.append('board_fqbn', tarForm.board_fqbn)
+    if (tarForm.custom_cmd.trim()) formData.append('custom_cmd', tarForm.custom_cmd.trim())
+
+    tarImportMutation.mutate(formData)
+  }
+
   return (
     <div className="min-h-screen bg-dark-900 text-gray-100">
       {/* Header */}
@@ -128,6 +187,17 @@ export default function HomePage() {
           <h1 className="text-xl font-bold tracking-tight">ESP32 Web IDE</h1>
         </div>
         <div className="flex items-center gap-3">
+          <button
+            onClick={() => {
+              setTarImportError(null)
+              setTarFile(null)
+              setShowTarImport(true)
+            }}
+            className="flex items-center gap-2 bg-dark-700 hover:bg-dark-600 text-gray-200 border border-dark-500 px-4 py-2 rounded-md text-sm font-medium transition-colors"
+          >
+            <UploadCloud size={16} />
+            导入 Tar 压缩包
+          </button>
           <button
             onClick={() => {
               setImportError(null)
@@ -422,6 +492,177 @@ export default function HomePage() {
                 >
                   {importMutation.isPending && <Loader2 size={14} className="animate-spin" />}
                   {importMutation.isPending ? '正在克隆与导入...' : '开始导入'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Import from Tar/Zip Archive Modal */}
+      {showTarImport && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4">
+          <div className="bg-dark-800 border border-dark-600 rounded-xl shadow-2xl w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center gap-2 mb-5">
+              <UploadCloud className="text-blue-400" size={22} />
+              <div>
+                <h3 className="text-lg font-semibold">导入项目压缩包</h3>
+                <p className="text-xs text-gray-400 mt-0.5">支持 .tar, .tar.gz, .tgz, .zip 格式源码包，自动解压并保留完整目录树</p>
+              </div>
+            </div>
+
+            <form onSubmit={handleTarImport} className="space-y-4">
+              {/* 文件上传拖拽区 */}
+              <div>
+                <label className="block text-sm text-gray-400 mb-1.5 font-medium">
+                  项目压缩包文件 <span className="text-red-400">*</span>
+                </label>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".tar,.tar.gz,.tgz,.zip"
+                  className="hidden"
+                  onChange={e => {
+                    const f = e.target.files?.[0]
+                    if (f) handleTarFileSelect(f)
+                  }}
+                />
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  onDragOver={e => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                  }}
+                  onDrop={e => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    const f = e.dataTransfer.files?.[0]
+                    if (f) handleTarFileSelect(f)
+                  }}
+                  className={`border-2 border-dashed rounded-lg p-5 text-center cursor-pointer transition-colors ${
+                    tarFile
+                      ? 'border-blue-500/80 bg-blue-950/20'
+                      : 'border-dark-500 hover:border-dark-400 bg-dark-900/50'
+                  }`}
+                >
+                  {tarFile ? (
+                    <div className="flex items-center justify-center gap-3 text-left">
+                      <FileArchive className="text-blue-400 shrink-0" size={28} />
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-gray-200 truncate">{tarFile.name}</div>
+                        <div className="text-xs text-gray-400">
+                          {(tarFile.size / 1024 / 1024).toFixed(2)} MB · 点击可更换文件
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <UploadCloud className="mx-auto text-gray-400" size={32} />
+                      <div className="text-sm text-gray-300">
+                        点击选择或将压缩包拖拽至此
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        支持 .tar, .tar.gz, .tgz, .zip（单个二进制资源最大支持 50MB）
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* 项目名称 */}
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">
+                  项目名称 <span className="text-red-400">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="项目英文名称，如 moto-gps-waveshare"
+                  value={tarForm.name}
+                  onChange={e => setTarForm(f => ({ ...f, name: e.target.value }))}
+                  className="w-full bg-dark-900 border border-dark-500 rounded-md px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              {/* 框架与板型 */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">开发框架</label>
+                  <select
+                    value={tarForm.framework}
+                    onChange={e => setTarForm(f => ({ ...f, framework: e.target.value }))}
+                    className="w-full bg-dark-900 border border-dark-500 rounded-md px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+                  >
+                    <option value="auto">自动识别 (推荐)</option>
+                    <option value="arduino">Arduino</option>
+                    <option value="espidf">ESP-IDF</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">目标板型</label>
+                  <select
+                    value={tarForm.board_fqbn}
+                    onChange={e => setTarForm(f => ({ ...f, board_fqbn: e.target.value }))}
+                    className="w-full bg-dark-900 border border-dark-500 rounded-md px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+                  >
+                    {(boards.length > 0 ? boards : [
+                      { fqbn: 'esp32:esp32:esp32', name: 'ESP32 DevKitC' },
+                      { fqbn: 'esp32:esp32:esp32s3', name: 'ESP32-S3 DevKit' },
+                      { fqbn: 'esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi', name: 'ESP32-S3 N16R8 (16MB Flash / 8MB OPI PSRAM)' },
+                      { fqbn: 'esp32:esp32:esp32c3', name: 'ESP32-C3' },
+                      { fqbn: 'esp32:esp32:esp32s2', name: 'ESP32-S2' },
+                      { fqbn: 'waveshare:esp32s3:touch_amoled_175c', name: 'Waveshare ESP32-S3-Touch-AMOLED-1.75C' },
+                    ]).map(b => {
+                      const fqbn = b.fqbn || b.id || ''
+                      return (
+                        <option key={fqbn} value={fqbn}>{b.name}</option>
+                      )
+                    })}
+                  </select>
+                </div>
+              </div>
+
+              {/* 可选自定义编译命令 */}
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">
+                  自定义编译命令（选填）
+                </label>
+                <input
+                  type="text"
+                  placeholder="留空使用默认编译，例如: idf.py build"
+                  value={tarForm.custom_cmd}
+                  onChange={e => setTarForm(f => ({ ...f, custom_cmd: e.target.value }))}
+                  className="w-full bg-dark-900 border border-dark-500 rounded-md px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-blue-500 font-mono text-xs"
+                />
+                <p className="text-[11px] text-gray-500 mt-1">
+                  若项目包含特殊构建参数或子目录，可在项目创建后随时在编辑器面板调整
+                </p>
+              </div>
+
+              {tarImportError && (
+                <div className="flex items-start gap-2 text-red-400 text-sm bg-red-900/20 border border-red-800/40 rounded-md px-3 py-2">
+                  <AlertCircle size={16} className="shrink-0 mt-0.5" />
+                  <span className="break-all">{tarImportError}</span>
+                </div>
+              )}
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowTarImport(false)}
+                  disabled={tarImportMutation.isPending}
+                  className="flex-1 bg-dark-700 hover:bg-dark-600 text-gray-300 py-2 rounded-md text-sm transition-colors"
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  disabled={tarImportMutation.isPending || !tarFile}
+                  className="flex-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white py-2 rounded-md text-sm font-medium transition-colors flex items-center justify-center gap-2"
+                >
+                  {tarImportMutation.isPending && <Loader2 size={14} className="animate-spin" />}
+                  {tarImportMutation.isPending ? '正在解压并创建项目...' : '开始导入'}
                 </button>
               </div>
             </form>

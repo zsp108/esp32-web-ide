@@ -50,7 +50,7 @@ export const filesApi = {
 }
 
 export const buildsApi = {
-  create: (data: { project_id: string; framework?: string; board?: string; board_fqbn?: string }) =>
+  create: (data: { project_id: string; framework?: string; board?: string; board_fqbn?: string; custom_cmd?: string }) =>
     apiClient.post('/builds', data).then(r => r.data),
   get: (id: string) => apiClient.get(`/builds/${id}`).then(r => r.data),
   listByProject: (projectId: string) => apiClient.get(`/projects/${projectId}/builds`).then(r => r.data),
@@ -67,4 +67,8 @@ export const importApi = {
     board_fqbn: string;
     sub_dir?: string;
   }) => apiClient.post('/import/git', data).then(r => r.data),
+  fromArchive: (formData: FormData) =>
+    apiClient.post('/projects/import-tar', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }).then(r => r.data),
 }

@@ -53,10 +53,11 @@ func NewBuildsHandler(cfg *config.Config, database *db.Database, storage service
 
 // createBuildRequest 创建编译任务的请求体。
 type createBuildRequest struct {
-	ProjectID string `json:"project_id" binding:"required,uuid"`
-	Framework string `json:"framework"`
-	Board     string `json:"board"`
-	BoardFQBN string `json:"board_fqbn"`
+	ProjectID     string `json:"project_id" binding:"required,uuid"`
+	Framework     string `json:"framework"`
+	Board         string `json:"board"`
+	BoardFQBN     string `json:"board_fqbn"`
+	CustomCommand string `json:"custom_cmd"`
 }
 
 // Create godoc
@@ -99,14 +100,21 @@ func (h *BuildsHandler) Create(c *gin.Context) {
 		h.db.DB.Model(&project).Update("board_fqbn", boardFQBN)
 	}
 
+	// 更新或沿用项目的自定义命令
+	customCmd := strings.TrimSpace(req.CustomCommand)
+	if customCmd != project.CustomCommand {
+		h.db.DB.Model(&project).Update("custom_command", customCmd)
+	}
+
 	// 创建编译记录
 	build := models.BuildRecord{
-		ID:        uuid.New(),
-		ProjectID: projectID,
-		Status:    models.BuildStatusPending,
-		Framework: framework,
-		BoardFQBN: boardFQBN,
-		CreatedAt: time.Now(),
+		ID:            uuid.New(),
+		ProjectID:     projectID,
+		Status:        models.BuildStatusPending,
+		Framework:     framework,
+		BoardFQBN:     boardFQBN,
+		CustomCommand: customCmd,
+		CreatedAt:     time.Now(),
 	}
 	if err := h.db.DB.Create(&build).Error; err != nil {
 		h.logger.Error("创建编译记录失败", zap.Error(err))
@@ -116,10 +124,11 @@ func (h *BuildsHandler) Create(c *gin.Context) {
 
 	// 将任务入队
 	payload, _ := json.Marshal(worker.CompilePayload{
-		BuildID:   build.ID.String(),
-		ProjectID: projectID.String(),
-		Framework: framework,
-		BoardFQBN: boardFQBN,
+		BuildID:       build.ID.String(),
+		ProjectID:     projectID.String(),
+		Framework:     framework,
+		BoardFQBN:     boardFQBN,
+		CustomCommand: customCmd,
 	})
 	task := asynq.NewTask(worker.TaskCompile, payload)
 	_, err := h.asynqClient.Enqueue(task, asynq.MaxRetry(0))
