@@ -1,11 +1,13 @@
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import Editor from '@monaco-editor/react'
 import {
   Cpu, Wifi, WifiOff, Play, Download, Terminal,
   Loader2, CheckCircle2, XCircle, AlertTriangle, FileCode, ArrowLeft, Square, Zap,
-  FilePlus, Trash2, Settings, FileText, Code2, Pencil
+  FilePlus, Trash2, Settings, FileText, Code2, Pencil,
+  Folder, FolderOpen, ChevronRight, ChevronDown, Database, Image, Search,
+  FolderPlus, ChevronsUpDown, ChevronsDownUp, X
 } from 'lucide-react'
 import { projectsApi, filesApi, buildsApi, boardsApi } from '../api/client'
 import { useWebSerial } from '../hooks/useWebSerial'
@@ -18,6 +20,110 @@ interface LogEntry {
 }
 
 type RightPanel = 'device' | 'build' | 'logs' | 'flash'
+
+interface FileTreeNode {
+  name: string
+  path: string
+  isFolder: boolean
+  sizeBytes?: number
+  children?: FileTreeNode[]
+}
+
+function buildFileTree(files: { path: string; size_bytes?: number }[], filter: string = ''): FileTreeNode[] {
+  const normalizedFilter = filter.trim().toLowerCase()
+  const filteredFiles = normalizedFilter
+    ? files.filter(f => f.path.toLowerCase().includes(normalizedFilter))
+    : files
+
+  const root: FileTreeNode = { name: '', path: '', isFolder: true, children: [] }
+
+  for (const file of filteredFiles) {
+    const parts = file.path.split('/')
+    let current = root
+    let currentPath = ''
+
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i]
+      currentPath = currentPath ? `${currentPath}/${part}` : part
+      const isLast = i === parts.length - 1
+
+      if (isLast) {
+        current.children = current.children || []
+        current.children.push({
+          name: part,
+          path: file.path,
+          isFolder: false,
+          sizeBytes: file.size_bytes,
+        })
+      } else {
+        current.children = current.children || []
+        let folder = current.children.find(c => c.isFolder && c.name === part)
+        if (!folder) {
+          folder = {
+            name: part,
+            path: currentPath,
+            isFolder: true,
+            children: [],
+          }
+          current.children.push(folder)
+        }
+        current = folder
+      }
+    }
+  }
+
+  function sortNodes(nodes: FileTreeNode[]) {
+    nodes.sort((a, b) => {
+      if (a.isFolder && !b.isFolder) return -1
+      if (!a.isFolder && b.isFolder) return 1
+      return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+    })
+    for (const node of nodes) {
+      if (node.children) {
+        sortNodes(node.children)
+      }
+    }
+  }
+
+  if (root.children) {
+    sortNodes(root.children)
+    return root.children
+  }
+  return []
+}
+
+function getFileIcon(filename: string) {
+  const lower = filename.toLowerCase()
+  if (lower.endsWith('.ino')) {
+    return { Icon: Cpu, color: 'text-teal-400' }
+  }
+  if (lower.endsWith('.cpp') || lower.endsWith('.c') || lower.endsWith('.cc') || lower.endsWith('.cxx')) {
+    return { Icon: Code2, color: 'text-blue-400' }
+  }
+  if (lower.endsWith('.h') || lower.endsWith('.hpp')) {
+    return { Icon: FileCode, color: 'text-amber-400' }
+  }
+  if (lower.endsWith('.ini') || lower.endsWith('.json') || lower.endsWith('.yaml') || lower.endsWith('.yml') || lower.endsWith('.lock') || lower.endsWith('.toml')) {
+    return { Icon: Settings, color: 'text-purple-400' }
+  }
+  if (lower.endsWith('.sqlite') || lower.endsWith('.db') || lower.endsWith('.sql')) {
+    return { Icon: Database, color: 'text-indigo-400' }
+  }
+  if (lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower.endsWith('.svg') || lower.endsWith('.gif') || lower.endsWith('.ico')) {
+    return { Icon: Image, color: 'text-pink-400' }
+  }
+  if (lower.endsWith('.md') || lower.endsWith('.txt')) {
+    return { Icon: FileText, color: 'text-emerald-400' }
+  }
+  return { Icon: FileText, color: 'text-gray-400' }
+}
+
+function formatSize(bytes?: number): string {
+  if (!bytes) return ''
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MB`
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)}KB`
+  return `${bytes}B`
+}
 
 export default function EditorPage() {
   const navigate = useNavigate()
@@ -53,12 +159,71 @@ export default function EditorPage() {
   const [renamingOldPath, setRenamingOldPath] = useState('')
   const [renamingNewPath, setRenamingNewPath] = useState('')
   const [saveSuccess, setSaveSuccess] = useState(false)
+  const [fileFilter, setFileFilter] = useState('')
+  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({})
 
   const { data: projectFiles = [], refetch: refetchFiles } = useQuery<{ id: string; path: string; size_bytes: number }[]>({
     queryKey: ['files', projectId],
     queryFn: () => filesApi.list(projectId!),
     enabled: !!projectId,
   })
+
+  // 构建文件目录树
+  const fileTree = useMemo(() => {
+    return buildFileTree(projectFiles, fileFilter)
+  }, [projectFiles, fileFilter])
+
+  // 初始自动展开顶层目录及当前选中文件的目录
+  useEffect(() => {
+    if (projectFiles.length > 0) {
+      setExpandedFolders(prev => {
+        const next = { ...prev }
+        // 自动展开包含 activeFile 的所有父目录
+        if (activeFile) {
+          const parts = activeFile.split('/')
+          let cur = ''
+          for (let i = 0; i < parts.length - 1; i++) {
+            cur = cur ? `${cur}/${parts[i]}` : parts[i]
+            next[cur] = true
+          }
+        }
+        // 若尚未展开任何目录，默认展开第 1 级顶层目录
+        if (Object.keys(prev).length === 0) {
+          for (const f of projectFiles) {
+            const top = f.path.split('/')[0]
+            if (f.path.includes('/')) {
+              next[top] = true
+            }
+          }
+        }
+        return next
+      })
+    }
+  }, [projectFiles, activeFile])
+
+  const toggleFolder = (folderPath: string) => {
+    setExpandedFolders(prev => ({
+      ...prev,
+      [folderPath]: !prev[folderPath],
+    }))
+  }
+
+  const expandAll = () => {
+    const all: Record<string, boolean> = {}
+    for (const f of projectFiles) {
+      const parts = f.path.split('/')
+      let cur = ''
+      for (let i = 0; i < parts.length - 1; i++) {
+        cur = cur ? `${cur}/${parts[i]}` : parts[i]
+        all[cur] = true
+      }
+    }
+    setExpandedFolders(all)
+  }
+
+  const collapseAll = () => {
+    setExpandedFolders({})
+  }
 
   const { data: project } = useQuery({
     queryKey: ['project', projectId],
@@ -440,6 +605,108 @@ export default function EditorPage() {
     },
   ]
 
+  const renderTreeNode = (node: FileTreeNode, depth = 0): React.ReactNode => {
+    if (node.isFolder) {
+      const isExpanded = !!fileFilter || !!expandedFolders[node.path]
+      const childCount = node.children ? node.children.length : 0
+
+      return (
+        <div key={node.path} className="flex flex-col">
+          <div
+            onClick={() => toggleFolder(node.path)}
+            style={{ paddingLeft: `${depth * 14 + 10}px` }}
+            className={clsx(
+              'flex items-center justify-between pr-2 py-1.5 text-xs transition-colors cursor-pointer group hover:bg-dark-700/60 select-none',
+              isExpanded ? 'text-gray-200 font-medium' : 'text-gray-400'
+            )}
+            title={`目录: ${node.path} (${childCount} 项)`}
+          >
+            <div className="flex items-center gap-1.5 min-w-0 truncate">
+              {isExpanded ? (
+                <ChevronDown size={13} className="text-gray-400 shrink-0" />
+              ) : (
+                <ChevronRight size={13} className="text-gray-500 shrink-0" />
+              )}
+              {isExpanded ? (
+                <FolderOpen size={14} className="text-amber-400 shrink-0" />
+              ) : (
+                <Folder size={14} className="text-amber-500/80 shrink-0" />
+              )}
+              <span className="truncate text-gray-300 text-xs font-mono">{node.name}</span>
+            </div>
+
+            <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 shrink-0 ml-1">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setNewFileName(node.path + '/')
+                  setShowNewFileModal(true)
+                }}
+                className="p-1 text-gray-500 hover:text-blue-400 rounded transition-colors"
+                title={`在 ${node.name} 目录下新建文件`}
+              >
+                <FolderPlus size={12} />
+              </button>
+            </div>
+          </div>
+
+          {isExpanded && node.children && (
+            <div className="flex flex-col">
+              {node.children.map(child => renderTreeNode(child, depth + 1))}
+            </div>
+          )}
+        </div>
+      )
+    }
+
+    const isActive = activeFile === node.path
+    const { Icon, color: iconColor } = getFileIcon(node.name)
+
+    return (
+      <div
+        key={node.path}
+        onClick={() => handleSelectFile(node.path)}
+        style={{ paddingLeft: `${(depth + 1) * 14 + 6}px` }}
+        className={clsx(
+          'flex items-center justify-between pr-2 py-1.5 text-xs truncate transition-all cursor-pointer group',
+          isActive
+            ? 'bg-blue-600/20 text-blue-300 font-medium border-l-2 border-blue-500'
+            : 'text-gray-400 hover:text-gray-200 hover:bg-dark-700/50'
+        )}
+        title={`${node.path}${node.sizeBytes ? ` (${formatSize(node.sizeBytes)})` : ''}`}
+      >
+        <div className="flex items-center gap-2 min-w-0 truncate">
+          <Icon size={14} className={clsx('shrink-0', iconColor)} />
+          <span className="truncate font-mono">{node.name}</span>
+        </div>
+
+        <div className="flex items-center gap-1 shrink-0 ml-1">
+          {node.sizeBytes && node.sizeBytes > 1024 * 500 && (
+            <span className="text-[10px] text-gray-500 group-hover:hidden font-mono">
+              {formatSize(node.sizeBytes)}
+            </span>
+          )}
+          <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5">
+            <button
+              onClick={(e) => handleStartRename(node.path, e)}
+              className="p-1 text-gray-500 hover:text-blue-400 rounded transition-all"
+              title={`重命名 ${node.name}`}
+            >
+              <Pencil size={12} />
+            </button>
+            <button
+              onClick={(e) => handleDeleteFile(node.path, e)}
+              className="p-1 text-gray-500 hover:text-red-400 rounded transition-all"
+              title={`删除 ${node.name}`}
+            >
+              <Trash2 size={12} />
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="h-screen flex flex-col bg-dark-900 text-gray-100 overflow-hidden">
       {/* Top bar */}
@@ -556,70 +823,75 @@ export default function EditorPage() {
 
       <div className="flex flex-1 overflow-hidden">
         {/* File tree */}
-        <aside className="w-56 shrink-0 border-r border-dark-600 bg-dark-800 flex flex-col overflow-hidden">
-          <div className="flex items-center justify-between px-3 py-2 border-b border-dark-600/80 shrink-0 bg-dark-850">
-            <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">文件列表</span>
-            <button
-              onClick={() => setShowNewFileModal(true)}
-              className="flex items-center gap-1 text-[11px] text-blue-400 hover:text-blue-300 hover:bg-blue-900/30 px-2 py-0.5 rounded transition-colors"
-              title="新建代码或配置文件 (.cpp, .h, .ini 等)"
-            >
-              <FilePlus size={13} />
-              <span>新建</span>
-            </button>
+        <aside className="w-64 md:w-72 shrink-0 border-r border-dark-600 bg-dark-850 flex flex-col overflow-hidden select-none">
+          <div className="flex items-center justify-between px-3 py-2 border-b border-dark-600/80 shrink-0 bg-dark-800">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className="text-xs font-semibold text-gray-300 uppercase tracking-wider">文件列表</span>
+              <span className="text-[10px] text-gray-400 font-mono bg-dark-700 px-1.5 py-0.5 rounded">
+                {projectFiles.length}
+              </span>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={expandAll}
+                className="p-1 text-gray-400 hover:text-gray-200 hover:bg-dark-700 rounded transition-colors"
+                title="全部展开"
+              >
+                <ChevronsUpDown size={13} />
+              </button>
+              <button
+                onClick={collapseAll}
+                className="p-1 text-gray-400 hover:text-gray-200 hover:bg-dark-700 rounded transition-colors"
+                title="全部折叠"
+              >
+                <ChevronsDownUp size={13} />
+              </button>
+              <button
+                onClick={() => {
+                  setNewFileName('')
+                  setShowNewFileModal(true)
+                }}
+                className="flex items-center gap-1 text-[11px] text-blue-400 hover:text-blue-300 hover:bg-blue-900/30 px-1.5 py-0.5 rounded transition-colors"
+                title="新建代码或配置文件 (.cpp, .h, .ini 等)"
+              >
+                <FilePlus size={13} />
+                <span>新建</span>
+              </button>
+            </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto py-1 space-y-0.5">
-            {projectFiles.map(file => {
-              const isActive = activeFile === file.path
-              let Icon = FileText
-              let iconColor = 'text-gray-400'
-              if (file.path.endsWith('.ino')) {
-                Icon = Cpu
-                iconColor = 'text-teal-400'
-              } else if (file.path.endsWith('.cpp') || file.path.endsWith('.c')) {
-                Icon = Code2
-                iconColor = 'text-blue-400'
-              } else if (file.path.endsWith('.h') || file.path.endsWith('.hpp')) {
-                Icon = FileCode
-                iconColor = 'text-amber-400'
-              } else if (file.path.endsWith('.ini')) {
-                Icon = Settings
-                iconColor = 'text-purple-400'
-              }
-
-              return (
-                <div
-                  key={file.path}
-                  onClick={() => handleSelectFile(file.path)}
-                  className={clsx(
-                    'flex items-center justify-between px-3 py-1.5 text-xs truncate transition-colors cursor-pointer group',
-                    isActive ? 'bg-blue-600/20 text-blue-300 font-medium' : 'text-gray-400 hover:text-gray-200 hover:bg-dark-700/60'
-                  )}
+          {/* Quick search / filter input */}
+          <div className="px-2.5 py-1.5 border-b border-dark-700/60 bg-dark-850/60 shrink-0">
+            <div className="flex items-center gap-1.5 bg-dark-900 border border-dark-600/70 rounded px-2 py-1 text-xs text-gray-300 focus-within:border-blue-500 transition-colors">
+              <Search size={12} className="text-gray-500 shrink-0" />
+              <input
+                type="text"
+                value={fileFilter}
+                onChange={e => setFileFilter(e.target.value)}
+                placeholder="搜索文件 / 目录..."
+                className="bg-transparent border-none outline-none w-full text-xs placeholder:text-gray-500 text-gray-200"
+              />
+              {fileFilter && (
+                <button
+                  onClick={() => setFileFilter('')}
+                  className="text-gray-500 hover:text-gray-300 shrink-0"
+                  title="清除搜索"
                 >
-                  <div className="flex items-center gap-2 truncate min-w-0">
-                    <Icon size={14} className={clsx('shrink-0', iconColor)} />
-                    <span className="truncate">{file.path}</span>
-                  </div>
-                  <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 shrink-0 ml-1">
-                    <button
-                      onClick={(e) => handleStartRename(file.path, e)}
-                      className="p-1 text-gray-500 hover:text-blue-400 rounded transition-all"
-                      title={`重命名 ${file.path}`}
-                    >
-                      <Pencil size={12} />
-                    </button>
-                    <button
-                      onClick={(e) => handleDeleteFile(file.path, e)}
-                      className="p-1 text-gray-500 hover:text-red-400 rounded transition-all"
-                      title={`删除 ${file.path}`}
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
-                </div>
-              )
-            })}
+                  <X size={12} />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Hierarchical Directory Tree */}
+          <div className="flex-1 overflow-y-auto py-1 space-y-0.5">
+            {fileTree.length > 0 ? (
+              fileTree.map(node => renderTreeNode(node, 0))
+            ) : (
+              <div className="px-4 py-8 text-center text-xs text-gray-500">
+                {fileFilter ? '未找到匹配的文件或目录' : '暂无文件'}
+              </div>
+            )}
           </div>
         </aside>
 
@@ -627,12 +899,24 @@ export default function EditorPage() {
         <main className="flex-1 flex flex-col overflow-hidden bg-dark-900">
           {activeFile ? (
             <>
-              {/* Editor sub-header / tab */}
+              {/* Editor sub-header / tab with breadcrumb */}
               <div className="flex items-center justify-between px-4 py-1.5 border-b border-dark-600 bg-dark-850 shrink-0 text-xs">
-                <div className="flex items-center gap-2 text-gray-300 font-mono">
-                  <span className="text-gray-100 font-semibold">{activeFile}</span>
+                <div className="flex items-center gap-1.5 text-gray-300 font-mono min-w-0 truncate">
+                  {activeFile.split('/').map((part, idx, arr) => {
+                    const isLast = idx === arr.length - 1
+                    const { Icon, color: iconColor } = getFileIcon(activeFile)
+                    return (
+                      <span key={idx} className="flex items-center gap-1 shrink-0">
+                        {idx > 0 && <span className="text-gray-600">/</span>}
+                        {isLast && <Icon size={13} className={clsx('shrink-0', iconColor)} />}
+                        <span className={clsx(isLast ? 'text-gray-100 font-semibold' : 'text-gray-400 hover:text-gray-200')}>
+                          {part}
+                        </span>
+                      </span>
+                    )
+                  })}
                   {saveSuccess && (
-                    <span className="text-[11px] text-green-400 flex items-center gap-1 animate-pulse">
+                    <span className="text-[11px] text-green-400 flex items-center gap-1 animate-pulse ml-2 shrink-0">
                       <CheckCircle2 size={11} /> 已保存
                     </span>
                   )}
