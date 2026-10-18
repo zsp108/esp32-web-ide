@@ -4,7 +4,7 @@ import { useQuery, useMutation } from '@tanstack/react-query'
 import Editor from '@monaco-editor/react'
 import {
   Cpu, Wifi, WifiOff, Play, Download, Terminal, ChevronRight,
-  Loader2, CheckCircle2, XCircle, AlertTriangle, FileCode, ArrowLeft, Square
+  Loader2, CheckCircle2, XCircle, AlertTriangle, FileCode, ArrowLeft, Square, Zap
 } from 'lucide-react'
 import { projectsApi, filesApi, buildsApi, boardsApi } from '../api/client'
 import { useWebSerial } from '../hooks/useWebSerial'
@@ -37,10 +37,21 @@ export default function EditorPage() {
   const [buildStage, setBuildStage] = useState<string>('')
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [binUrl, setBinUrl] = useState<string | null>(null)
-  const [flashing, setFlashing] = useState(false)
   const logsEndRef = useRef<HTMLDivElement>(null)
 
-  const { device, connecting, error: serialError, isSupported, connect, disconnect } = useWebSerial()
+  const {
+    device,
+    connecting,
+    flashing,
+    flashProgress,
+    flashStage,
+    flashSuccess,
+    error: serialError,
+    isSupported,
+    connect,
+    disconnect,
+    flashFirmware,
+  } = useWebSerial()
   const [selectedBoard, setSelectedBoard] = useState<string>('')
 
   const { data: project } = useQuery({
@@ -212,19 +223,25 @@ export default function EditorPage() {
   }
 
   const handleFlash = async () => {
-    if (!device || !binUrl) return
-    setFlashing(true)
+    if (!binUrl) {
+      alert('请先编译项目生成固件后再执行刷写！')
+      return
+    }
     setRightPanel('flash')
     try {
-      appendLog({ level: 'info', text: '开始刷写固件...' })
-      // TODO: 集成 esptool-js 进行真实刷写
-      await new Promise(r => setTimeout(r, 2000))
-      appendLog({ level: 'info', text: '固件刷写完成！' })
-    } catch (e: unknown) {
-      const err = e as Error
-      appendLog({ level: 'error', text: `刷写失败: ${err.message}` })
-    } finally {
-      setFlashing(false)
+      appendLog({ level: 'info', text: '==================== 开始固件刷写 ====================' })
+      await flashFirmware(
+        binUrl,
+        undefined,
+        (msg) => {
+          let level: 'info' | 'warning' | 'error' = 'info'
+          if (msg.includes('[ERROR]') || msg.toLowerCase().includes('error:')) level = 'error'
+          else if (msg.includes('[WARN') || msg.toLowerCase().includes('warning:')) level = 'warning'
+          appendLog({ level, text: msg })
+        }
+      )
+    } catch (err: any) {
+      console.error('固件刷写流程发生错误:', err)
     }
   }
 
@@ -277,7 +294,18 @@ export default function EditorPage() {
         </span>
       ) : null,
     },
-    { id: 'flash', label: '刷写' },
+    {
+      id: 'flash',
+      label: '刷写',
+      badge: flashing ? (
+        <span className="flex items-center gap-1 text-[10px] bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded-full font-mono animate-pulse">
+          <Loader2 size={10} className="animate-spin" />
+          {flashProgress}%
+        </span>
+      ) : flashSuccess ? (
+        <span className="w-2 h-2 rounded-full bg-green-400" />
+      ) : null,
+    },
   ]
 
   return (
@@ -360,7 +388,7 @@ export default function EditorPage() {
           </div>
         ) : (
           <button
-            onClick={connect}
+            onClick={() => connect()}
             disabled={connecting || !isSupported}
             className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-200 border border-dark-500 rounded px-3 py-1 transition-colors disabled:opacity-50"
           >
@@ -379,6 +407,19 @@ export default function EditorPage() {
             ? <><Loader2 size={13} className="animate-spin" />编译中...</>
             : <><Play size={13} />编译</>}
         </button>
+
+        {/* Flash button */}
+        {binUrl && (
+          <button
+            onClick={handleFlash}
+            disabled={flashing}
+            className="flex items-center gap-1.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white text-xs px-3.5 py-1.5 rounded font-medium transition-colors shadow-sm"
+            title="一键将编译好的固件通过 Web Serial 刷写入 ESP32"
+          >
+            {flashing ? <Loader2 size={13} className="animate-spin" /> : <Zap size={13} />}
+            {flashing ? `刷写中 (${flashProgress}%)` : '刷写固件'}
+          </button>
+        )}
       </header>
 
       <div className="flex flex-1 overflow-hidden">
@@ -463,6 +504,12 @@ export default function EditorPage() {
                 onViewLogs={() => setRightPanel('logs')}
                 framework={project?.framework}
                 latestBuild={latestBuild}
+                flashing={flashing}
+                flashProgress={flashProgress}
+                onFlashDirect={() => {
+                  setRightPanel('flash')
+                  handleFlash()
+                }}
               />
             )}
 
@@ -475,7 +522,16 @@ export default function EditorPage() {
                 device={device}
                 binUrl={binUrl}
                 flashing={flashing}
+                flashProgress={flashProgress}
+                flashStage={flashStage}
+                flashSuccess={flashSuccess}
+                error={serialError}
+                latestBuild={latestBuild}
                 onFlash={handleFlash}
+                onConnect={() => connect((msg) => appendLog({ level: 'info', text: msg }))}
+                onDisconnect={disconnect}
+                isSupported={isSupported}
+                onViewLogs={() => setRightPanel('logs')}
               />
             )}
           </div>
@@ -599,6 +655,9 @@ function BuildPanel({
   onViewLogs,
   framework,
   latestBuild,
+  flashing,
+  flashProgress,
+  onFlashDirect,
 }: {
   status: 'idle' | 'building' | 'success' | 'failed' | 'cancelled'
   progress: number
@@ -613,6 +672,9 @@ function BuildPanel({
   onViewLogs: () => void
   framework?: string
   latestBuild?: any
+  flashing?: boolean
+  flashProgress?: number
+  onFlashDirect?: () => void
 }) {
   const boardObj = boards.find((b: any) => (b.fqbn || b.id) === currentBoard)
   const boardName = boardObj?.name || currentBoard
@@ -689,21 +751,31 @@ function BuildPanel({
           </div>
 
           <div className="flex gap-2 pt-1">
+            <button
+              onClick={onFlashDirect}
+              disabled={flashing}
+              className="flex-1 flex items-center justify-center gap-1.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white text-xs py-2 rounded font-medium transition-colors shadow-sm"
+              title="一键将编译好的固件通过 Web Serial 刷写入 ESP32"
+            >
+              {flashing ? <Loader2 size={13} className="animate-spin" /> : <Zap size={13} />}
+              {flashing ? `刷写中 (${flashProgress}%)` : '一键刷写固件'}
+            </button>
             {binUrl && (
               <a
                 href={binUrl}
                 download
-                className="flex-1 flex items-center justify-center gap-1.5 bg-green-700 hover:bg-green-600 text-white text-xs py-2 rounded font-medium transition-colors"
+                className="flex items-center justify-center gap-1 bg-dark-700 hover:bg-dark-600 text-gray-300 text-xs px-2.5 py-2 rounded border border-dark-500 transition-colors"
+                title="下载编译好的固件 .bin 文件"
               >
                 <Download size={13} />
-                下载固件 (.bin)
+                下载
               </a>
             )}
             <button
               onClick={onViewLogs}
-              className="flex items-center justify-center gap-1 bg-dark-700 hover:bg-dark-600 text-gray-300 text-xs px-3 py-2 rounded border border-dark-500 transition-colors"
+              className="flex items-center justify-center gap-1 bg-dark-700 hover:bg-dark-600 text-gray-300 text-xs px-2.5 py-2 rounded border border-dark-500 transition-colors"
             >
-              查看日志
+              日志
             </button>
           </div>
         </div>
@@ -886,42 +958,210 @@ function LogsPanel({ logs, logsEndRef }: {
   )
 }
 
-function FlashPanel({ device, binUrl, flashing, onFlash }: {
+function FlashPanel({
+  device,
+  binUrl,
+  flashing,
+  flashProgress,
+  flashStage,
+  flashSuccess,
+  error,
+  latestBuild,
+  onFlash,
+  onConnect,
+  onDisconnect,
+  isSupported,
+  onViewLogs,
+}: {
   device: ReturnType<typeof useWebSerial>['device']
   binUrl: string | null
   flashing: boolean
+  flashProgress: number
+  flashStage: string
+  flashSuccess: boolean
+  error: string | null
+  latestBuild?: any
   onFlash: () => void
+  onConnect: () => void
+  onDisconnect: () => void
+  isSupported: boolean
+  onViewLogs: () => void
 }) {
   return (
     <div className="space-y-4">
-      <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">固件刷写</h3>
+      <div className="flex items-center justify-between">
+        <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-1.5">
+          <Zap size={13} className="text-purple-400" />
+          固件刷写 (Web Serial)
+        </h3>
+        {onViewLogs && (
+          <button
+            onClick={onViewLogs}
+            className="text-[11px] text-blue-400 hover:text-blue-300 underline"
+          >
+            刷写日志 →
+          </button>
+        )}
+      </div>
 
-      {!device && (
-        <div className="flex items-start gap-2 text-yellow-400 text-xs bg-yellow-900/20 rounded p-2">
-          <AlertTriangle size={12} className="mt-0.5 shrink-0" />
-          <span>请先在「设备」面板连接 ESP32</span>
+      {/* 1. 固件状态卡片 */}
+      <div className="bg-dark-800 rounded-lg p-3 border border-dark-600 space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-gray-400">固件产物</span>
+          {binUrl ? (
+            <span className="text-[11px] bg-green-950/80 text-green-300 border border-green-700/60 px-2 py-0.5 rounded-full font-medium">
+              固件已就绪 (.bin)
+            </span>
+          ) : (
+            <span className="text-[11px] bg-yellow-950/80 text-yellow-300 border border-yellow-700/60 px-2 py-0.5 rounded-full font-medium">
+              尚未编译
+            </span>
+          )}
+        </div>
+        {binUrl ? (
+          <div className="text-xs text-gray-300 space-y-1 pt-1">
+            {latestBuild?.bin_size_bytes && (
+              <div className="flex justify-between text-gray-400">
+                <span>大小:</span>
+                <span className="font-mono text-gray-200">
+                  {(latestBuild.bin_size_bytes / 1024).toFixed(1)} KB
+                </span>
+              </div>
+            )}
+            <div className="flex justify-between text-gray-400">
+              <span>刷写偏移地址:</span>
+              <span className="font-mono text-gray-200">0x0 (包含引导扇区)</span>
+            </div>
+          </div>
+        ) : (
+          <p className="text-xs text-yellow-400/90 pt-1">
+            请先在「编译」面板点击【开始编译】，生成固件后即可刷入硬件。
+          </p>
+        )}
+      </div>
+
+      {/* 2. 串口设备状态卡片 */}
+      <div className="bg-dark-800 rounded-lg p-3 border border-dark-600 space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-gray-400">硬件设备</span>
+          {device ? (
+            <span className="text-[11px] bg-green-950/80 text-green-300 border border-green-700/60 px-2 py-0.5 rounded-full font-medium flex items-center gap-1">
+              <CheckCircle2 size={10} />
+              已连接
+            </span>
+          ) : (
+            <span className="text-[11px] text-gray-400">未连接</span>
+          )}
+        </div>
+        {device ? (
+          <div className="space-y-1.5 text-xs">
+            <div className="flex justify-between text-gray-400">
+              <span>芯片型号:</span>
+              <span className="text-gray-200 font-medium">{device.chip}</span>
+            </div>
+            <div className="flex justify-between text-gray-400">
+              <span>Flash 大小:</span>
+              <span className="text-gray-200">{device.flashSize}</span>
+            </div>
+            <button
+              onClick={onDisconnect}
+              className="w-full mt-1.5 text-xs text-red-400 border border-red-800/80 rounded py-1 hover:bg-red-900/20 transition-colors"
+            >
+              断开连接
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-2 pt-1">
+            <p className="text-xs text-gray-400">
+              {isSupported
+                ? '支持点击直接刷写，系统将弹出选择串口；或点击下方预先连接：'
+                : '当前浏览器不支持 Web Serial，请使用 Chrome 或 Edge 浏览器。'}
+            </p>
+            {isSupported && (
+              <button
+                onClick={onConnect}
+                className="w-full text-xs text-gray-300 bg-dark-700 hover:bg-dark-600 border border-dark-500 rounded py-1.5 transition-colors"
+              >
+                选择并连接 ESP32 串口
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* 3. 刷写进度与状态展示 */}
+      {flashing && (
+        <div className="bg-purple-950/40 border border-purple-500/50 rounded-lg p-3.5 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-purple-300">
+              <Loader2 size={16} className="animate-spin text-purple-400" />
+              <span className="text-xs font-semibold">正在刷写固件到 ESP32...</span>
+            </div>
+            <span className="text-xs font-mono font-bold text-purple-200">{flashProgress}%</span>
+          </div>
+
+          <div className="h-2.5 bg-dark-700 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-gradient-to-r from-purple-600 to-indigo-400 rounded-full transition-all duration-200"
+              style={{ width: `${Math.max(flashProgress, 5)}%` }}
+            />
+          </div>
+
+          <p className="text-xs text-purple-200 truncate font-mono text-[11px]">
+            {flashStage || '正在向 ESP32 烧录数据...'}
+          </p>
         </div>
       )}
 
-      {!binUrl && (
-        <div className="flex items-start gap-2 text-yellow-400 text-xs bg-yellow-900/20 rounded p-2">
-          <AlertTriangle size={12} className="mt-0.5 shrink-0" />
-          <span>请先编译项目生成固件</span>
+      {/* 4. 成功反馈 */}
+      {flashSuccess && !flashing && (
+        <div className="bg-green-950/40 border border-green-500/50 rounded-lg p-3 space-y-2">
+          <div className="flex items-center gap-2 text-green-400">
+            <CheckCircle2 size={16} />
+            <span className="text-xs font-semibold">固件刷写成功！</span>
+          </div>
+          <p className="text-xs text-green-300/90 leading-relaxed">
+            固件数据已完整烧录至 ESP32 内部 Flash，设备已自动完成硬件复位并启动运行新固件。
+          </p>
         </div>
       )}
 
+      {/* 5. 失败反馈 */}
+      {error && !flashing && (
+        <div className="bg-red-950/40 border border-red-500/50 rounded-lg p-3 space-y-2">
+          <div className="flex items-center gap-2 text-red-400">
+            <XCircle size={16} />
+            <span className="text-xs font-semibold">刷写失败</span>
+          </div>
+          <p className="text-xs text-red-300 font-mono text-[11px] bg-red-950/50 p-2 rounded">
+            {error}
+          </p>
+          <div className="text-[11px] text-gray-400 space-y-1 bg-dark-800/80 p-2 rounded border border-dark-600/50">
+            <p className="font-semibold text-gray-300">💡 常见排查方法：</p>
+            <p>1. 请确保串口没有被其他软件（VS Code / Arduino IDE / 串口助手）占用。</p>
+            <p>2. 部分 ESP32-S3 开发板需手动按住板载【BOOT】按键再点刷写，出现连接后再松手。</p>
+          </div>
+        </div>
+      )}
+
+      {/* 6. 主操作按钮 */}
       <button
         onClick={onFlash}
-        disabled={!device || !binUrl || flashing}
-        className="w-full flex items-center justify-center gap-2 bg-purple-700 hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm py-2 rounded-md font-medium transition-colors"
+        disabled={!binUrl || flashing || !isSupported}
+        className="w-full flex items-center justify-center gap-2 bg-purple-700 hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm py-2.5 rounded-md font-medium transition-colors shadow-sm"
       >
-        {flashing ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-        {flashing ? '刷写中...' : '刷写固件'}
+        {flashing ? <Loader2 size={15} className="animate-spin" /> : <Zap size={15} />}
+        {flashing
+          ? `正在刷写中 (${flashProgress}%)...`
+          : flashSuccess
+          ? '再次刷写固件'
+          : '一键刷写固件到 ESP32'}
       </button>
 
-      <p className="text-xs text-gray-600">
-        通过 Web Serial API 将编译好的固件直接刷入连接的 ESP32 设备。
+      <p className="text-[11px] text-gray-500 text-center leading-relaxed">
+        通过 Web Serial 原生串口直接将固件烧录到 ESP32，并在完成后自动重启运行。
       </p>
     </div>
   )
 }
+
