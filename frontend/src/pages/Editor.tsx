@@ -6,7 +6,7 @@ import {
   Cpu, Wifi, WifiOff, Play, Download, Terminal, ChevronRight,
   Loader2, CheckCircle2, XCircle, AlertTriangle, FileCode
 } from 'lucide-react'
-import { projectsApi, filesApi, buildsApi } from '../api/client'
+import { projectsApi, filesApi, buildsApi, boardsApi } from '../api/client'
 import { useWebSerial } from '../hooks/useWebSerial'
 import { useWebSocket, WSMessage } from '../hooks/useWebSocket'
 import clsx from 'clsx'
@@ -39,12 +39,20 @@ export default function EditorPage() {
   const logsEndRef = useRef<HTMLDivElement>(null)
 
   const { device, connecting, error: serialError, isSupported, connect, disconnect } = useWebSerial()
+  const [selectedBoard, setSelectedBoard] = useState<string>('')
 
   const { data: project } = useQuery({
     queryKey: ['project', projectId],
     queryFn: () => projectsApi.get(projectId!),
     enabled: !!projectId,
   })
+
+  const { data: boards = [] } = useQuery({
+    queryKey: ['boards'],
+    queryFn: boardsApi.list,
+  })
+
+  const currentBoard = selectedBoard || project?.board_fqbn || 'esp32:esp32:esp32'
 
   const appendLog = useCallback((entry: LogEntry) => {
     setLogs(prev => [...prev, entry])
@@ -73,7 +81,7 @@ export default function EditorPage() {
     mutationFn: () => buildsApi.create({
       project_id: projectId!,
       framework: project?.framework ?? 'arduino',
-      board: project?.board_fqbn ?? 'esp32:esp32:esp32',
+      board: currentBoard,
     }),
     onMutate: () => {
       setBuildStatus('building')
@@ -154,9 +162,31 @@ export default function EditorPage() {
           <Cpu size={18} className="text-blue-400" />
           <span className="font-semibold text-sm">{project?.name ?? 'ESP32 Web IDE'}</span>
           {project && (
-            <span className="text-xs text-gray-500 bg-dark-700 px-2 py-0.5 rounded">
-              {project.framework.toUpperCase()} · {project.board_fqbn}
-            </span>
+            <div className="flex items-center gap-2 ml-2">
+              <span className="text-xs text-gray-400 bg-dark-700 px-2 py-0.5 rounded font-mono uppercase">
+                {project.framework}
+              </span>
+              <select
+                value={currentBoard}
+                onChange={e => setSelectedBoard(e.target.value)}
+                className="text-xs bg-dark-700 hover:bg-dark-600 border border-dark-500 rounded px-2.5 py-1 text-gray-200 focus:outline-none focus:border-blue-500 cursor-pointer transition-colors"
+                title="切换目标开发板"
+              >
+                {(boards.length > 0 ? boards : [
+                  { fqbn: 'esp32:esp32:esp32', name: 'ESP32 DevKitC' },
+                  { fqbn: 'esp32:esp32:esp32s3', name: 'ESP32-S3 DevKit' },
+                  { fqbn: 'esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi', name: 'ESP32-S3 N16R8 (16MB Flash / 8MB OPI PSRAM)' },
+                  { fqbn: 'esp32:esp32:esp32c3', name: 'ESP32-C3' },
+                  { fqbn: 'esp32:esp32:esp32s2', name: 'ESP32-S2' },
+                  { fqbn: 'waveshare:esp32s3:touch_amoled_175c', name: 'Waveshare ESP32-S3-Touch-AMOLED-1.75C' },
+                ]).map((b: any) => {
+                  const fqbn = b.fqbn || b.id || ''
+                  return (
+                    <option key={fqbn} value={fqbn}>{b.name}</option>
+                  )
+                })}
+              </select>
+            </div>
           )}
         </div>
 
@@ -265,6 +295,9 @@ export default function EditorPage() {
                 onBuild={handleBuild}
                 binUrl={binUrl}
                 buildId={buildId}
+                boards={boards}
+                currentBoard={currentBoard}
+                onSelectBoard={setSelectedBoard}
               />
             )}
 
@@ -387,16 +420,43 @@ function DevicePanel({ device, connecting, error, isSupported, onConnect, onDisc
   )
 }
 
-function BuildPanel({ status, progress, onBuild, binUrl, buildId }: {
+function BuildPanel({ status, progress, onBuild, binUrl, buildId, boards, currentBoard, onSelectBoard }: {
   status: 'idle' | 'building' | 'success' | 'failed'
   progress: number
   onBuild: () => void
   binUrl: string | null
   buildId: string | null
+  boards: any[]
+  currentBoard: string
+  onSelectBoard: (board: string) => void
 }) {
   return (
     <div className="space-y-4">
-      <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">编译</h3>
+      <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">编译设置</h3>
+
+      <div>
+        <label className="block text-xs text-gray-400 mb-1.5 font-medium">目标开发板</label>
+        <select
+          value={currentBoard}
+          onChange={e => onSelectBoard(e.target.value)}
+          disabled={status === 'building'}
+          className="w-full bg-dark-900 border border-dark-500 rounded-md px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-blue-500 disabled:opacity-50"
+        >
+          {(boards.length > 0 ? boards : [
+            { fqbn: 'esp32:esp32:esp32', name: 'ESP32 DevKitC' },
+            { fqbn: 'esp32:esp32:esp32s3', name: 'ESP32-S3 DevKit' },
+            { fqbn: 'esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi', name: 'ESP32-S3 N16R8 (16MB Flash / 8MB OPI PSRAM)' },
+            { fqbn: 'esp32:esp32:esp32c3', name: 'ESP32-C3' },
+            { fqbn: 'esp32:esp32:esp32s2', name: 'ESP32-S2' },
+            { fqbn: 'waveshare:esp32s3:touch_amoled_175c', name: 'Waveshare ESP32-S3-Touch-AMOLED-1.75C' },
+          ]).map((b: any) => {
+            const fqbn = b.fqbn || b.id || ''
+            return (
+              <option key={fqbn} value={fqbn}>{b.name}</option>
+            )
+          })}
+        </select>
+      </div>
 
       <button
         onClick={onBuild}

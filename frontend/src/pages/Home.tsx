@@ -191,28 +191,25 @@ export default function HomePage() {
 
               <div>
                 <label className="block text-sm text-gray-400 mb-1">目标板型</label>
-                {boards.length > 0 ? (
-                  <select
-                    value={form.board_fqbn}
-                    onChange={e => setForm(f => ({ ...f, board_fqbn: e.target.value }))}
-                    className="w-full bg-dark-900 border border-dark-500 rounded-md px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
-                  >
-                    {boards.map(b => {
-                      const fqbn = b.fqbn || b.id || ''
-                      return (
-                        <option key={fqbn} value={fqbn}>{b.name}</option>
-                      )
-                    })}
-                  </select>
-                ) : (
-                  <input
-                    type="text"
-                    placeholder="esp32:esp32:esp32"
-                    value={form.board_fqbn}
-                    onChange={e => setForm(f => ({ ...f, board_fqbn: e.target.value }))}
-                    className="w-full bg-dark-900 border border-dark-500 rounded-md px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-blue-500"
-                  />
-                )}
+                <select
+                  value={form.board_fqbn}
+                  onChange={e => setForm(f => ({ ...f, board_fqbn: e.target.value }))}
+                  className="w-full bg-dark-900 border border-dark-500 rounded-md px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+                >
+                  {(boards.length > 0 ? boards : [
+                    { fqbn: 'esp32:esp32:esp32', name: 'ESP32 DevKitC' },
+                    { fqbn: 'esp32:esp32:esp32s3', name: 'ESP32-S3 DevKit' },
+                    { fqbn: 'esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi', name: 'ESP32-S3 N16R8 (16MB Flash / 8MB OPI PSRAM)' },
+                    { fqbn: 'esp32:esp32:esp32c3', name: 'ESP32-C3' },
+                    { fqbn: 'esp32:esp32:esp32s2', name: 'ESP32-S2' },
+                    { fqbn: 'waveshare:esp32s3:touch_amoled_175c', name: 'Waveshare ESP32-S3-Touch-AMOLED-1.75C' },
+                  ]).map(b => {
+                    const fqbn = b.fqbn || b.id || ''
+                    return (
+                      <option key={fqbn} value={fqbn}>{b.name}</option>
+                    )
+                  })}
+                </select>
               </div>
 
               {createMutation.isError && (
@@ -316,28 +313,25 @@ export default function HomePage() {
 
                 <div>
                   <label className="block text-sm text-gray-400 mb-1">目标板型</label>
-                  {boards.length > 0 ? (
-                    <select
-                      value={importForm.board_fqbn}
-                      onChange={e => setImportForm(f => ({ ...f, board_fqbn: e.target.value }))}
-                      className="w-full bg-dark-900 border border-dark-500 rounded-md px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
-                    >
-                      {boards.map(b => {
-                        const fqbn = b.fqbn || b.id || ''
-                        return (
-                          <option key={fqbn} value={fqbn}>{b.name}</option>
-                        )
-                      })}
-                    </select>
-                  ) : (
-                    <input
-                      type="text"
-                      placeholder="esp32:esp32:esp32"
-                      value={importForm.board_fqbn}
-                      onChange={e => setImportForm(f => ({ ...f, board_fqbn: e.target.value }))}
-                      className="w-full bg-dark-900 border border-dark-500 rounded-md px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-blue-500"
-                    />
-                  )}
+                  <select
+                    value={importForm.board_fqbn}
+                    onChange={e => setImportForm(f => ({ ...f, board_fqbn: e.target.value }))}
+                    className="w-full bg-dark-900 border border-dark-500 rounded-md px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+                  >
+                    {(boards.length > 0 ? boards : [
+                      { fqbn: 'esp32:esp32:esp32', name: 'ESP32 DevKitC' },
+                      { fqbn: 'esp32:esp32:esp32s3', name: 'ESP32-S3 DevKit' },
+                      { fqbn: 'esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi', name: 'ESP32-S3 N16R8 (16MB Flash / 8MB OPI PSRAM)' },
+                      { fqbn: 'esp32:esp32:esp32c3', name: 'ESP32-C3' },
+                      { fqbn: 'esp32:esp32:esp32s2', name: 'ESP32-S2' },
+                      { fqbn: 'waveshare:esp32s3:touch_amoled_175c', name: 'Waveshare ESP32-S3-Touch-AMOLED-1.75C' },
+                    ]).map(b => {
+                      const fqbn = b.fqbn || b.id || ''
+                      return (
+                        <option key={fqbn} value={fqbn}>{b.name}</option>
+                      )
+                    })}
+                  </select>
                 </div>
               </div>
 
