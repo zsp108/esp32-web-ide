@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -216,6 +218,17 @@ func (h *BuildsHandler) Download(c *gin.Context) {
 	if err != nil {
 		h.logger.Error("生成预签名 URL 失败", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "无法生成下载链接"})
+		return
+	}
+
+	// 本地存储模式（返回 file:// 协议）直接作为附件下发文件
+	if strings.HasPrefix(presignURL, "file://") {
+		filePath := strings.TrimPrefix(presignURL, "file://")
+		filename := filepath.Base(filePath)
+		if filename == "." || filename == "/" || filename == "" {
+			filename = "firmware.bin"
+		}
+		c.FileAttachment(filePath, filename)
 		return
 	}
 
