@@ -195,6 +195,63 @@ func (h *FilesHandler) DeleteFile(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// RenameFileRequest 定义重命名请求体。
+type RenameFileRequest struct {
+	OldPath string `json:"old_path" binding:"required"`
+	NewPath string `json:"new_path" binding:"required"`
+}
+
+// RenameFile 重命名项目文件
+func (h *FilesHandler) RenameFile(c *gin.Context) {
+	projectID, err := parseProjectID(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var req RenameFileRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数格式错误，需提供 old_path 与 new_path"})
+		return
+	}
+
+	oldPath := strings.TrimPrefix(strings.TrimSpace(req.OldPath), "/")
+	newPath := strings.TrimPrefix(strings.TrimSpace(req.NewPath), "/")
+
+	if oldPath == "" || newPath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "文件名不能为空"})
+		return
+	}
+	if oldPath == newPath {
+		c.JSON(http.StatusOK, gin.H{"message": "文件名无变更"})
+		return
+	}
+
+	// 检查目标文件是否已存在
+	var count int64
+	h.db.DB.Model(&models.ProjectFile{}).Where("project_id = ? AND path = ?", projectID, newPath).Count(&count)
+	if count > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "目标文件名已存在，请换一个名称"})
+		return
+	}
+
+	var pf models.ProjectFile
+	if err := h.db.DB.Where("project_id = ? AND path = ?", projectID, oldPath).First(&pf).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "原文件不存在"})
+		return
+	}
+
+	pf.Path = newPath
+	pf.UpdatedAt = time.Now()
+	if err := h.db.DB.Save(&pf).Error; err != nil {
+		h.logger.Error("重命名文件失败", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存重命名失败"})
+		return
+	}
+
+	c.JSON(http.StatusOK, pf)
+}
+
 // --- 辅助函数 ---
 
 func parseProjectID(c *gin.Context) (uuid.UUID, error) {

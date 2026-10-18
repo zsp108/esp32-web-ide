@@ -5,7 +5,7 @@ import Editor from '@monaco-editor/react'
 import {
   Cpu, Wifi, WifiOff, Play, Download, Terminal,
   Loader2, CheckCircle2, XCircle, AlertTriangle, FileCode, ArrowLeft, Square, Zap,
-  FilePlus, Trash2, Settings, FileText, Code2
+  FilePlus, Trash2, Settings, FileText, Code2, Pencil
 } from 'lucide-react'
 import { projectsApi, filesApi, buildsApi, boardsApi } from '../api/client'
 import { useWebSerial } from '../hooks/useWebSerial'
@@ -49,6 +49,9 @@ export default function EditorPage() {
   const [selectedBoard, setSelectedBoard] = useState<string>('')
   const [showNewFileModal, setShowNewFileModal] = useState(false)
   const [newFileName, setNewFileName] = useState('')
+  const [showRenameModal, setShowRenameModal] = useState(false)
+  const [renamingOldPath, setRenamingOldPath] = useState('')
+  const [renamingNewPath, setRenamingNewPath] = useState('')
   const [saveSuccess, setSaveSuccess] = useState(false)
 
   const { data: projectFiles = [], refetch: refetchFiles } = useQuery<{ id: string; path: string; size_bytes: number }[]>({
@@ -336,6 +339,36 @@ export default function EditorPage() {
     }
   }
 
+  // 开始重命名文件
+  const handleStartRename = (filePath: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setRenamingOldPath(filePath)
+    setRenamingNewPath(filePath)
+    setShowRenameModal(true)
+  }
+
+  // 确认重命名
+  const handleConfirmRename = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const clean = renamingNewPath.trim().replace(/^\/+/, '')
+    if (!clean) return
+    if (clean === renamingOldPath) {
+      setShowRenameModal(false)
+      return
+    }
+
+    try {
+      await filesApi.rename(projectId!, renamingOldPath, clean)
+      await refetchFiles()
+      if (activeFile === renamingOldPath) {
+        setActiveFile(clean)
+      }
+      setShowRenameModal(false)
+    } catch (err: any) {
+      alert(`重命名失败: ${err.response?.data?.error || err.message}`)
+    }
+  }
+
   // 删除文件
   const handleDeleteFile = async (filePath: string, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -568,13 +601,22 @@ export default function EditorPage() {
                     <Icon size={14} className={clsx('shrink-0', iconColor)} />
                     <span className="truncate">{file.path}</span>
                   </div>
-                  <button
-                    onClick={(e) => handleDeleteFile(file.path, e)}
-                    className="opacity-0 group-hover:opacity-100 p-1 text-gray-500 hover:text-red-400 rounded transition-all shrink-0 ml-1"
-                    title={`删除 ${file.path}`}
-                  >
-                    <Trash2 size={12} />
-                  </button>
+                  <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 shrink-0 ml-1">
+                    <button
+                      onClick={(e) => handleStartRename(file.path, e)}
+                      className="p-1 text-gray-500 hover:text-blue-400 rounded transition-all"
+                      title={`重命名 ${file.path}`}
+                    >
+                      <Pencil size={12} />
+                    </button>
+                    <button
+                      onClick={(e) => handleDeleteFile(file.path, e)}
+                      className="p-1 text-gray-500 hover:text-red-400 rounded transition-all"
+                      title={`删除 ${file.path}`}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
                 </div>
               )
             })}
@@ -786,6 +828,52 @@ export default function EditorPage() {
                   className="bg-blue-600 hover:bg-blue-500 text-white text-xs px-4 py-2 rounded-md font-medium transition-colors"
                 >
                   确认创建
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Rename File Modal */}
+      {showRenameModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4">
+          <div className="bg-dark-800 border border-dark-600 rounded-xl shadow-2xl w-full max-w-md p-6">
+            <h3 className="text-base font-semibold text-gray-100 mb-2 flex items-center gap-2">
+              <Pencil size={16} className="text-blue-400" />
+              <span>重命名文件</span>
+            </h3>
+            <p className="text-xs text-gray-400 mb-4 leading-relaxed">
+              原文件：<code className="text-gray-200 bg-dark-900 px-1.5 py-0.5 rounded font-mono">{renamingOldPath}</code>
+            </p>
+
+            <form onSubmit={handleConfirmRename} className="space-y-4">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1.5 font-medium">新文件名 (含扩展名)</label>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  placeholder="例如: main.cpp, main.ino, config.h"
+                  value={renamingNewPath}
+                  onChange={e => setRenamingNewPath(e.target.value)}
+                  className="w-full bg-dark-900 border border-dark-500 rounded-md px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-blue-500 font-mono"
+                />
+              </div>
+
+              <div className="flex justify-end gap-3 pt-3 border-t border-dark-700">
+                <button
+                  type="button"
+                  onClick={() => setShowRenameModal(false)}
+                  className="px-4 py-2 text-xs text-gray-400 hover:text-gray-200 transition-colors"
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  className="bg-blue-600 hover:bg-blue-500 text-white text-xs px-4 py-2 rounded-md font-medium transition-colors"
+                >
+                  确认修改
                 </button>
               </div>
             </form>

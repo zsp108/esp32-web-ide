@@ -58,6 +58,7 @@ func NewRouter(cfg *config.Config, database *db.Database, storage services.Stora
 
 			// 文件管理（挂载在项目下）
 			projects.PUT("/:id/files", filesHandler.UpsertFile)
+			projects.POST("/:id/files/rename", filesHandler.RenameFile)
 			projects.GET("/:id/files", filesHandler.ListFiles)
 			projects.GET("/:id/files/*path", filesHandler.GetFileContent)
 			projects.DELETE("/:id/files/*path", filesHandler.DeleteFile)

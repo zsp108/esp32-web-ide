@@ -45,6 +45,8 @@ export const filesApi = {
     apiClient.get(`/projects/${projectId}/files`).then(r => r.data),
   delete: (projectId: string, filePath: string) =>
     apiClient.delete(`/projects/${projectId}/files/${filePath}`).then(r => r.data),
+  rename: (projectId: string, oldPath: string, newPath: string) =>
+    apiClient.post(`/projects/${projectId}/files/rename`, { old_path: oldPath, new_path: newPath }).then(r => r.data),
 }
 
 export const buildsApi = {
