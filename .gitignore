@@ -1,0 +1,13 @@
+# Dependencies
+frontend/node_modules/
+backend/.gomodcache/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment variables
+.env.local

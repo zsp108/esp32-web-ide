@@ -1,0 +1,89 @@
+
+services:
+  # ---- 前端 ----
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+
+  # ---- Go 后端 API ----
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data/storage:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - SERVER_PORT=8080
+    ports:
+      - "8080:8080"   # 开发时直连，生产由 nginx 代理
+
+  # ---- Celery Worker（同一二进制，worker 模式）----
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: ["-mode=worker"]
+    env_file: .env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock   # 访问 Docker daemon
+      - ./data/storage:/app/storage
+    depends_on:
+      - backend
+    deploy:
+      replicas: 2   # 2个 Worker，可按需扩容
+
+  # ---- PostgreSQL ----
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: esp32ide
+      POSTGRES_PASSWORD: esp32ide_pass
+      POSTGRES_DB: esp32ide
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U esp32ide"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ---- Redis ----
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ---- Nginx 反向代理 ----
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      - frontend
+      - backend
+
+volumes:
+  pg_data:
+  redis_data:

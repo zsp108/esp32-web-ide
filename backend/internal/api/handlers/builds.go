@@ -1,0 +1,252 @@
+// Package handlers 提供编译任务相关的 HTTP 接口。
+package handlers
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/hibiken/asynq"
+	"go.uber.org/zap"
+
+	"github.com/esp32-web-ide/backend/internal/config"
+	"github.com/esp32-web-ide/backend/internal/db"
+	"github.com/esp32-web-ide/backend/internal/models"
+	"github.com/esp32-web-ide/backend/internal/services"
+	"github.com/esp32-web-ide/backend/internal/worker"
+)
+
+// BuildsHandler 处理编译任务相关请求。
+type BuildsHandler struct {
+	cfg         *config.Config
+	db          *db.Database
+	storage     services.StorageBackend
+	asynqClient *asynq.Client
+	logger      *zap.Logger
+}
+
+// NewBuildsHandler 创建 BuildsHandler 实例。
+func NewBuildsHandler(cfg *config.Config, database *db.Database, storage services.StorageBackend, logger *zap.Logger) *BuildsHandler {
+	client := asynq.NewClient(asynq.RedisClientOpt{Addr: redisAddrFromURL(cfg.RedisURL)})
+	return &BuildsHandler{
+		cfg:         cfg,
+		db:          database,
+		storage:     storage,
+		asynqClient: client,
+		logger:      logger,
+	}
+}
+
+// createBuildRequest 创建编译任务的请求体。
+type createBuildRequest struct {
+	ProjectID string `json:"project_id" binding:"required,uuid"`
+}
+
+// Create godoc
+// @Summary  创建编译任务
+// @Tags     builds
+// @Accept   json
+// @Produce  json
+// @Param    body  body      createBuildRequest  true  "编译请求"
+// @Success  202   {object}  models.BuildRecord
+// @Router   /api/v1/builds [post]
+func (h *BuildsHandler) Create(c *gin.Context) {
+	var req createBuildRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	projectID, _ := uuid.Parse(req.ProjectID)
+
+	// 查询项目信息
+	var project models.Project
+	if err := h.db.DB.First(&project, "id = ?", projectID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "项目不存在"})
+		return
+	}
+
+	// 创建编译记录
+	build := models.BuildRecord{
+		ID:        uuid.New(),
+		ProjectID: projectID,
+		Status:    models.BuildStatusPending,
+		Framework: project.Framework,
+		BoardFQBN: project.BoardFQBN,
+		CreatedAt: time.Now(),
+	}
+	if err := h.db.DB.Create(&build).Error; err != nil {
+		h.logger.Error("创建编译记录失败", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建编译任务失败"})
+		return
+	}
+
+	// 将任务入队
+	payload, _ := json.Marshal(worker.CompilePayload{
+		BuildID:   build.ID.String(),
+		ProjectID: projectID.String(),
+		Framework: project.Framework,
+		BoardFQBN: project.BoardFQBN,
+	})
+	task := asynq.NewTask(worker.TaskCompile, payload)
+	_, err := h.asynqClient.Enqueue(task, asynq.MaxRetry(0))
+	if err != nil {
+		h.logger.Error("任务入队失败", zap.Error(err))
+		// 回滚：将状态设为 failed
+		h.db.DB.Model(&build).Update("status", models.BuildStatusFailed)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "提交编译任务失败"})
+		return
+	}
+
+	c.JSON(http.StatusAccepted, build)
+}
+
+// Get godoc
+// @Summary  获取编译任务状态
+// @Tags     builds
+// @Produce  json
+// @Param    id  path      string  true  "BuildRecord UUID"
+// @Success  200 {object}  models.BuildRecord
+// @Router   /api/v1/builds/{id} [get]
+func (h *BuildsHandler) Get(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 Build ID"})
+		return
+	}
+
+	var build models.BuildRecord
+	if err := h.db.DB.First(&build, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "编译记录不存在"})
+		return
+	}
+
+	c.JSON(http.StatusOK, build)
+}
+
+// Download godoc
+// @Summary  下载编译产物（bin 文件）
+// @Tags     builds
+// @Param    id  path  string  true  "BuildRecord UUID"
+// @Success  302
+// @Router   /api/v1/builds/{id}/download [get]
+func (h *BuildsHandler) Download(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 Build ID"})
+		return
+	}
+
+	var build models.BuildRecord
+	if err := h.db.DB.First(&build, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "编译记录不存在"})
+		return
+	}
+
+	if build.Status != models.BuildStatusSuccess {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "编译尚未完成或未成功"})
+		return
+	}
+
+	// 生成预签名 URL（有效期 15 分钟）
+	presignURL, err := h.storage.PresignedURL(context.Background(), build.BinStorageKey, 15*time.Minute)
+	if err != nil {
+		h.logger.Error("生成预签名 URL 失败", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "无法生成下载链接"})
+		return
+	}
+
+	c.Redirect(http.StatusFound, presignURL)
+}
+
+// Cancel godoc
+// @Summary  取消编译任务
+// @Tags     builds
+// @Param    id  path  string  true  "BuildRecord UUID"
+// @Success  204
+// @Router   /api/v1/builds/{id} [delete]
+func (h *BuildsHandler) Cancel(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 Build ID"})
+		return
+	}
+
+	var build models.BuildRecord
+	if err := h.db.DB.First(&build, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "编译记录不存在"})
+		return
+	}
+
+	// 只有 pending 状态的任务可以取消
+	if build.Status != models.BuildStatusPending {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "只有 pending 状态的任务可以取消"})
+		return
+	}
+
+	if err := h.db.DB.Model(&build).Update("status", models.BuildStatusCancelled).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "取消失败"})
+		return
+	}
+
+	c.Status(http.StatusNoContent)
+}
+
+// ListByProject godoc
+// @Summary  获取项目编译历史
+// @Tags     builds
+// @Produce  json
+// @Param    id  path      string  true  "项目 UUID"
+// @Success  200 {array}   models.BuildRecord
+// @Router   /api/v1/projects/{id}/builds [get]
+func (h *BuildsHandler) ListByProject(c *gin.Context) {
+	projectID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的项目 ID"})
+		return
+	}
+
+	var builds []models.BuildRecord
+	if err := h.db.DB.Where("project_id = ?", projectID).
+		Order("created_at DESC").
+		Find(&builds).Error; err != nil {
+		h.logger.Error("查询编译历史失败", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询失败"})
+		return
+	}
+
+	c.JSON(http.StatusOK, builds)
+}
+
+// redisAddrFromURL 从 redis:// URL 提取 host:port。
+// 例如 "redis://localhost:6379/0" → "localhost:6379"
+func redisAddrFromURL(redisURL string) string {
+	// 简单解析，生产中可用 url.Parse
+	s := redisURL
+	s = stripPrefix(s, "redis://")
+	s = stripPrefix(s, "rediss://")
+	// 去掉 /db 部分
+	if idx := lastIndex(s, "/"); idx >= 0 {
+		s = s[:idx]
+	}
+	return s
+}
+
+func stripPrefix(s, prefix string) string {
+	if len(s) >= len(prefix) && s[:len(prefix)] == prefix {
+		return s[len(prefix):]
+	}
+	return s
+}
+
+func lastIndex(s, substr string) int {
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == substr[0] {
+			return i
+		}
+	}
+	return -1
+}
