@@ -161,19 +161,9 @@ func (h *ProjectsHandler) Get(c *gin.Context) {
 // @Success  200            {array}   models.Project
 // @Router   /api/v1/projects [get]
 func (h *ProjectsHandler) ListBySession(c *gin.Context) {
-	sessionToken := c.GetHeader("X-Session-Token")
-	if sessionToken == "" {
-		sessionToken = c.Query("session_token")
-	}
-	if sessionToken == "" {
-		c.JSON(http.StatusOK, []models.Project{})
-		return
-	}
-
 	var projects []models.Project
-	if err := h.db.DB.Where("session_token = ?", sessionToken).
-		Order("created_at DESC").
-		Find(&projects).Error; err != nil {
+	// 在自建 Web IDE 模式下，直接按创建时间倒序返回所有项目，避免因浏览器本地 session 变化导致已有项目在列表中不可见
+	if err := h.db.DB.Order("created_at DESC").Find(&projects).Error; err != nil {
 		h.logger.Error("查询项目列表失败", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询失败"})
 		return

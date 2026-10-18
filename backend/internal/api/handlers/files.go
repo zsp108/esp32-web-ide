@@ -2,6 +2,9 @@
 package handlers
 
 import (
+	"bytes"
+	"encoding/base64"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -83,12 +86,17 @@ func (h *FilesHandler) UpsertFile(c *gin.Context) {
 	result := h.db.DB.Where("project_id = ? AND path = ?", projectID, filePath).First(&pf)
 	now := time.Now()
 
+	contentStr := string(content)
+	if bytes.Contains(content, []byte{0}) {
+		contentStr = "base64:" + base64.StdEncoding.EncodeToString(content)
+	}
+
 	if result.Error != nil {
 		// 新建
 		pf = models.ProjectFile{
 			ProjectID: projectID,
 			Path:      filePath,
-			Content:   string(content),
+			Content:   contentStr,
 			SizeBytes: int64(len(content)),
 			CreatedAt: now,
 			UpdatedAt: now,
@@ -100,7 +108,7 @@ func (h *FilesHandler) UpsertFile(c *gin.Context) {
 		}
 	} else {
 		// 更新
-		pf.Content = string(content)
+		pf.Content = contentStr
 		pf.SizeBytes = int64(len(content))
 		pf.UpdatedAt = now
 		if err := h.db.DB.Save(&pf).Error; err != nil {
@@ -160,6 +168,20 @@ func (h *FilesHandler) GetFileContent(c *gin.Context) {
 	var pf models.ProjectFile
 	if err := h.db.DB.Where("project_id = ? AND path = ?", projectID, filePath).First(&pf).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "文件不存在"})
+		return
+	}
+
+	if strings.HasPrefix(pf.Content, "base64:") {
+		if c.Query("raw") == "true" {
+			data, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(pf.Content, "base64:"))
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "解码文件内容失败"})
+				return
+			}
+			c.Data(http.StatusOK, "application/octet-stream", data)
+			return
+		}
+		c.String(http.StatusOK, fmt.Sprintf("// [ 二进制文件: %s (大小: %d 字节) ]\n// 该文件为原项目包含的二进制数据（离线地图数据库/资产），已在项目中完整存储，编译固件时将自动提供给固件并在设备中运行。", pf.Path, pf.SizeBytes))
 		return
 	}
 

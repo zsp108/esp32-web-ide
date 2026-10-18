@@ -4,6 +4,7 @@ package services
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -113,7 +114,17 @@ func (s *BuildService) Run(ctx context.Context, buildID, projectID string) error
 		if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 			return s.failBuild(&build, buildID, err)
 		}
-		if err := os.WriteFile(fullPath, []byte(f.Content), 0644); err != nil {
+		var data []byte
+		if strings.HasPrefix(f.Content, "base64:") {
+			var err error
+			data, err = base64.StdEncoding.DecodeString(strings.TrimPrefix(f.Content, "base64:"))
+			if err != nil {
+				return s.failBuild(&build, buildID, fmt.Errorf("解码文件 %s 失败: %w", f.Path, err))
+			}
+		} else {
+			data = []byte(f.Content)
+		}
+		if err := os.WriteFile(fullPath, data, 0644); err != nil {
 			return s.failBuild(&build, buildID, err)
 		}
 	}
