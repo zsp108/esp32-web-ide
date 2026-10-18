@@ -269,18 +269,35 @@ func (h *BuildsHandler) Cancel(c *gin.Context) {
 		return
 	}
 
-	// 只有 pending 状态的任务可以取消
-	if build.Status != models.BuildStatusPending {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "只有 pending 状态的任务可以取消"})
+	// pending 或 running 状态的任务可以中止
+	if build.Status != models.BuildStatusPending && build.Status != models.BuildStatusRunning {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "当前任务状态不是排队中或编译中，无法中止"})
 		return
 	}
 
-	if err := h.db.DB.Model(&build).Update("status", models.BuildStatusCancelled).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "取消失败"})
+	if err := h.db.DB.Model(&build).Updates(map[string]interface{}{
+		"status":    models.BuildStatusCancelled,
+		"error_msg": "用户已手动中止编译任务",
+	}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "中止失败"})
 		return
 	}
 
-	c.Status(http.StatusNoContent)
+	// 告知 Worker 立即停止 Docker 编译容器
+	h.redisClient.Set(c.Request.Context(), "build:"+id.String()+":cancelled", "1", 10*time.Minute)
+	h.redisClient.Publish(c.Request.Context(), "build:"+id.String()+":cancel", "cancel")
+
+	// 广播 WebSocket 结束消息
+	cancelMsg, _ := json.Marshal(map[string]interface{}{
+		"type":   "done",
+		"status": "cancelled",
+		"stage":  "用户已手动中止编译任务",
+		"error":  "用户已手动中止编译任务",
+	})
+	h.redisClient.Publish(c.Request.Context(), "build:"+id.String()+":log", cancelMsg)
+	h.redisClient.RPush(c.Request.Context(), "build:"+id.String()+":logs", cancelMsg)
+
+	c.JSON(http.StatusOK, gin.H{"message": "编译任务已成功中止"})
 }
 
 // ListByProject godoc

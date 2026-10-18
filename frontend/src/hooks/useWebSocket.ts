@@ -6,7 +6,7 @@ export type WSMessage = {
   text?: string
   percent?: number
   stage?: string
-  status?: 'success' | 'failed'
+  status?: 'success' | 'failed' | 'cancelled'
   bin_url?: string
   stats?: { bin_size: number; flash_pct: number; ram_pct: number }
   error?: string

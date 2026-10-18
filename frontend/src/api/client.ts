@@ -48,6 +48,7 @@ export const buildsApi = {
   get: (id: string) => apiClient.get(`/builds/${id}`).then(r => r.data),
   listByProject: (projectId: string) => apiClient.get(`/projects/${projectId}/builds`).then(r => r.data),
   downloadUrl: (id: string) => `/api/v1/builds/${id}/download`,
+  cancel: (id: string) => apiClient.post(`/builds/${id}/cancel`).then(r => r.data),
 }
 
 export const importApi = {

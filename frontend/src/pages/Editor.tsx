@@ -4,7 +4,7 @@ import { useQuery, useMutation } from '@tanstack/react-query'
 import Editor from '@monaco-editor/react'
 import {
   Cpu, Wifi, WifiOff, Play, Download, Terminal, ChevronRight,
-  Loader2, CheckCircle2, XCircle, AlertTriangle, FileCode, ArrowLeft
+  Loader2, CheckCircle2, XCircle, AlertTriangle, FileCode, ArrowLeft, Square
 } from 'lucide-react'
 import { projectsApi, filesApi, buildsApi, boardsApi } from '../api/client'
 import { useWebSerial } from '../hooks/useWebSerial'
@@ -103,9 +103,9 @@ export default function EditorPage() {
             return { level, text: line }
           }))
         }
-      } else if (latest.status === 'failed' || latest.status === 'timeout') {
+      } else if (latest.status === 'failed' || latest.status === 'timeout' || latest.status === 'cancelled') {
         setBuildStatus('failed')
-        setBuildStage(latest.error_msg || '编译失败')
+        setBuildStage(latest.error_msg || (latest.status === 'cancelled' ? '编译任务已中止' : '编译失败'))
         if (logs.length === 0 && latest.build_log) {
           const lines = latest.build_log.split('\n').filter(Boolean)
           setLogs(lines.map((line: string) => {
@@ -132,11 +132,18 @@ export default function EditorPage() {
       if (typeof msg.percent === 'number') setBuildProgress(msg.percent)
       if (msg.stage) setBuildStage(msg.stage)
     } else if (msg.type === 'done') {
-      setBuildStatus(msg.status === 'success' ? 'success' : 'failed')
-      setBuildProgress(msg.status === 'success' ? 100 : 0)
-      if (msg.stage) setBuildStage(msg.stage)
-      if (msg.bin_url) setBinUrl(msg.bin_url)
-      if (msg.error) appendLog({ level: 'error', text: msg.error })
+      if (msg.status === 'cancelled') {
+        setBuildStatus('failed')
+        setBuildProgress(0)
+        setBuildStage('编译任务已中止')
+        if (msg.error) appendLog({ level: 'warning', text: `[WARN] ${msg.error}` })
+      } else {
+        setBuildStatus(msg.status === 'success' ? 'success' : 'failed')
+        setBuildProgress(msg.status === 'success' ? 100 : 0)
+        if (msg.stage) setBuildStage(msg.stage)
+        if (msg.bin_url) setBinUrl(msg.bin_url)
+        if (msg.error) appendLog({ level: 'error', text: msg.error })
+      }
       refetchBuilds()
     }
   }, [appendLog, refetchBuilds])
@@ -180,6 +187,20 @@ export default function EditorPage() {
       await saveFileMutation.mutateAsync()
     }
     buildMutation.mutate()
+  }
+
+  const handleCancelBuild = async () => {
+    if (!buildId) return
+    try {
+      await buildsApi.cancel(buildId)
+      setBuildStatus('failed')
+      setBuildProgress(0)
+      setBuildStage('编译任务已中止')
+      appendLog({ level: 'warning', text: '[WARN] 用户已手动中止当前编译任务' })
+      refetchBuilds()
+    } catch (err: any) {
+      console.error('中止任务失败:', err)
+    }
   }
 
   const handleFlash = async () => {
@@ -300,14 +321,24 @@ export default function EditorPage() {
 
         {/* 顶部后台编译状态提示 */}
         {buildStatus === 'building' && (
-          <button
-            onClick={() => setRightPanel('build')}
-            className="flex items-center gap-1.5 text-xs bg-blue-900/30 text-blue-300 border border-blue-700/50 rounded px-2.5 py-1 hover:bg-blue-900/50 transition-colors animate-pulse"
-            title="点击查看后台编译进度"
-          >
-            <Loader2 size={12} className="animate-spin text-blue-400" />
-            <span>后台编译中 ({buildProgress}%)</span>
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setRightPanel('build')}
+              className="flex items-center gap-1.5 text-xs bg-blue-900/30 text-blue-300 border border-blue-700/50 rounded px-2.5 py-1 hover:bg-blue-900/50 transition-colors animate-pulse"
+              title="点击查看后台编译进度"
+            >
+              <Loader2 size={12} className="animate-spin text-blue-400" />
+              <span>后台编译中 ({buildProgress}%)</span>
+            </button>
+            <button
+              onClick={handleCancelBuild}
+              className="flex items-center gap-1 text-xs bg-red-950/70 hover:bg-red-900 text-red-300 hover:text-white border border-red-800/60 rounded px-2 py-1 transition-colors font-medium shadow-sm"
+              title="中止当前正在运行的编译任务"
+            >
+              <Square size={10} className="fill-current" />
+              <span>中止</span>
+            </button>
+          </div>
         )}
 
         {/* Device status */}
@@ -413,6 +444,7 @@ export default function EditorPage() {
                 progress={buildProgress}
                 stage={buildStage}
                 onBuild={handleBuild}
+                onCancel={handleCancelBuild}
                 binUrl={binUrl}
                 buildId={buildId}
                 boards={boards}
@@ -548,6 +580,7 @@ function BuildPanel({
   progress,
   stage,
   onBuild,
+  onCancel,
   binUrl,
   buildId,
   boards,
@@ -561,6 +594,7 @@ function BuildPanel({
   progress: number
   stage: string
   onBuild: () => void
+  onCancel: () => void
   binUrl: string | null
   buildId: string | null
   boards: any[]
@@ -583,7 +617,17 @@ function BuildPanel({
               <Loader2 size={16} className="animate-spin" />
               <span className="text-xs font-semibold uppercase tracking-wider">后台编译进行中</span>
             </div>
-            <span className="text-xs font-mono font-bold text-blue-300">{progress}%</span>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-mono font-bold text-blue-300">{Math.max(progress, 10)}%</span>
+              <button
+                onClick={onCancel}
+                className="text-[11px] text-red-400 hover:text-red-200 bg-red-950/60 hover:bg-red-900/80 border border-red-700/60 px-2 py-0.5 rounded transition-colors flex items-center gap-1 font-medium"
+                title="中止当前编译任务"
+              >
+                <Square size={9} className="fill-current" />
+                <span>中止</span>
+              </button>
+            </div>
           </div>
 
           <div className="h-2 bg-dark-700 rounded-full overflow-hidden">
@@ -749,11 +793,19 @@ function BuildPanel({
                 后台编译中 ({Math.max(progress, 10)}%)
               </button>
               <button
+                onClick={onCancel}
+                title="中止当前编译任务"
+                className="px-3 py-2 bg-red-950/80 hover:bg-red-900 text-red-300 hover:text-white text-xs rounded-md border border-red-700/60 transition-colors flex items-center gap-1.5 shrink-0 font-medium"
+              >
+                <Square size={12} className="fill-current" />
+                中止编译
+              </button>
+              <button
                 onClick={onBuild}
-                title="若任务无响应，可重新发起编译"
+                title="重新发起编译"
                 className="px-3 py-2 bg-dark-700 hover:bg-dark-600 text-gray-300 hover:text-white text-xs rounded-md border border-dark-500 transition-colors shrink-0"
               >
-                重新发起
+                重试
               </button>
             </div>
           ) : (

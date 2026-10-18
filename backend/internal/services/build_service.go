@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -176,12 +177,43 @@ func (s *BuildService) Run(ctx context.Context, buildID, projectID string) error
 		},
 	}
 
-	buildErr := s.docker.RunBuild(ctx, opts)
+	// 创建可取消的上下文，并监听 Redis 中止信号
+	runCtx, runCancel := context.WithCancel(ctx)
+	defer runCancel()
+
+	cancelSub := s.redis.Subscribe(ctx, "build:"+buildID+":cancel")
+	defer cancelSub.Close()
+
+	go func() {
+		ch := cancelSub.Channel()
+		select {
+		case <-ch:
+			s.logger.Info("收到编译任务中止信号", zap.String("build_id", buildID))
+			runCancel()
+		case <-runCtx.Done():
+		}
+	}()
+
+	buildErr := s.docker.RunBuild(runCtx, opts)
 
 	durationMs := time.Since(start).Milliseconds()
 	fullLog := logBuf.String()
 
 	if buildErr != nil {
+		// 检查是否被用户主动中止
+		if errors.Is(runCtx.Err(), context.Canceled) || s.isCancelled(buildID) {
+			s.logger.Info("编译任务已由用户手动中止", zap.String("build_id", buildID))
+			s.db.DB.Model(&build).Updates(map[string]interface{}{
+				"status":      models.BuildStatusCancelled,
+				"build_log":   fullLog,
+				"duration_ms": durationMs,
+				"error_msg":   "用户已手动中止编译任务",
+			})
+			s.publishLog(buildID, "[WARN] 编译任务已由用户手动中止")
+			s.publishDone(buildID, "cancelled", "", "用户已手动中止编译任务")
+			return nil
+		}
+
 		// 区分超时和编译失败
 		status := models.BuildStatusFailed
 		if strings.Contains(buildErr.Error(), "超时") {
@@ -504,6 +536,12 @@ func (s *BuildService) publishDone(buildID string, status string, binURL, errMsg
 		Error:   errMsg,
 		Percent: 100,
 	})
+}
+
+// isCancelled 检查该编译任务是否已被标记为取消。
+func (s *BuildService) isCancelled(buildID string) bool {
+	res, err := s.redis.Get(context.Background(), "build:"+buildID+":cancelled").Result()
+	return err == nil && res == "1"
 }
 
 // failBuild 将编译记录更新为失败状态，并返回原始错误。

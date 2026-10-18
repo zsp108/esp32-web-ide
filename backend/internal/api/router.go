@@ -73,6 +73,7 @@ func NewRouter(cfg *config.Config, database *db.Database, storage services.Stora
 			builds.GET("/:id", buildsHandler.Get)
 			builds.GET("/:id/download", buildsHandler.Download)
 			builds.DELETE("/:id", buildsHandler.Cancel)
+			builds.POST("/:id/cancel", buildsHandler.Cancel)
 		}
 	}
 
