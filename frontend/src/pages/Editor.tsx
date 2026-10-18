@@ -1,10 +1,10 @@
 import { useState, useCallback, useRef } from 'react'
-import { useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import Editor from '@monaco-editor/react'
 import {
   Cpu, Wifi, WifiOff, Play, Download, Terminal, ChevronRight,
-  Loader2, CheckCircle2, XCircle, AlertTriangle, FileCode
+  Loader2, CheckCircle2, XCircle, AlertTriangle, FileCode, ArrowLeft
 } from 'lucide-react'
 import { projectsApi, filesApi, buildsApi, boardsApi } from '../api/client'
 import { useWebSerial } from '../hooks/useWebSerial'
@@ -26,6 +26,7 @@ interface LogEntry {
 type RightPanel = 'device' | 'build' | 'logs' | 'flash'
 
 export default function EditorPage() {
+  const navigate = useNavigate()
   const { projectId } = useParams<{ projectId: string }>()
   const [activeFile, setActiveFile] = useState<string | null>(null)
   const [fileContent, setFileContent] = useState<string>('')
@@ -157,7 +158,18 @@ export default function EditorPage() {
   return (
     <div className="h-screen flex flex-col bg-dark-900 text-gray-100 overflow-hidden">
       {/* Top bar */}
-      <header className="flex items-center gap-4 border-b border-dark-600 bg-dark-800 px-4 py-2 shrink-0">
+      <header className="flex items-center gap-3 border-b border-dark-600 bg-dark-800 px-4 py-2 shrink-0">
+        <button
+          onClick={() => navigate('/')}
+          className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white hover:bg-dark-700 border border-dark-500 rounded px-2.5 py-1 transition-colors"
+          title="返回项目列表首页"
+        >
+          <ArrowLeft size={14} />
+          <span>返回首页</span>
+        </button>
+
+        <div className="h-4 w-px bg-dark-600 mx-1" />
+
         <div className="flex items-center gap-2">
           <Cpu size={18} className="text-blue-400" />
           <span className="font-semibold text-sm">{project?.name ?? 'ESP32 Web IDE'}</span>
