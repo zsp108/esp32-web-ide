@@ -21,6 +21,6 @@ RUN arduino-cli core update-index && \
     arduino-cli core install esp32:esp32@3.3.10-cn
 
 COPY compile.sh /compile.sh
-RUN chmod +x /compile.sh
+RUN chmod +x /compile.sh && arduino-cli lib update-index
 WORKDIR /src
 ENTRYPOINT ["/compile.sh"]

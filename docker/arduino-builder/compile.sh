@@ -92,44 +92,131 @@ if [ -n "$LIB_TXT" ]; then
 fi
 
 # 2.3 智能扫描源码文件中的 #include <...>
-ALL_INCLUDES=$(grep -rohE '^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"][^>"]+[>"]' "$SRC_DIR" 2>/dev/null || true)
-
-add_lib_if_included() {
-    local header="$1"
-    local lib_name="$2"
-    if echo "$ALL_INCLUDES" | grep -qi "$header"; then
-        LIBS_TO_INSTALL+=("$lib_name")
-    fi
+# 系统核心库 / 内置头文件排除规则
+is_builtin_or_local() {
+    local h="$1"
+    case "$h" in
+        Arduino.h|SPI.h|Wire.h|WiFi.h|WiFiClient.h|WiFiServer.h|WiFiUdp.h|WiFiMulti.h|\
+        EEPROM.h|FS.h|SPIFFS.h|LittleFS.h|SD.h|SD_MMC.h|FFat.h|\
+        BluetoothSerial.h|BLEDevice.h|BLEServer.h|BLEUtils.h|BLE2902.h|BLEClient.h|\
+        Ticker.h|Update.h|WebServer.h|DNSServer.h|HTTPClient.h|HTTPUpdate.h|\
+        Preferences.h|esp_now.h|esp_wifi.h|esp_timer.h|esp_system.h|esp_task_wdt.h|\
+        driver/*|soc/*|freertos/*|hal/*|esp_*|\
+        stdio.h|stdlib.h|string.h|math.h|stdint.h|stdbool.h|time.h|stddef.h|assert.h|\
+        vector|string|map|memory|algorithm|utility|functional|queue|stack|set|iostream)
+            return 0
+            ;;
+        *)
+            if [ -f "$SRC_DIR/$h" ] || [ -f "$SRC_DIR/$(basename "$h")" ] || [ -f "/src/$h" ]; then
+                return 0
+            fi
+            return 1
+            ;;
+    esac
 }
 
 # 常见传感器、图形屏幕、通信驱动库字典匹配
-add_lib_if_included "Adafruit_GFX.h" "Adafruit GFX Library"
-add_lib_if_included "Adafruit_ST7735.h" "Adafruit ST7735 and ST7789 Library"
-add_lib_if_included "Adafruit_ST7789.h" "Adafruit ST7735 and ST7789 Library"
-add_lib_if_included "Adafruit_SSD1306.h" "Adafruit SSD1306"
-add_lib_if_included "Adafruit_SH110X.h" "Adafruit SH110X"
-add_lib_if_included "Adafruit_NeoPixel.h" "Adafruit NeoPixel"
-add_lib_if_included "TFT_eSPI.h" "TFT_eSPI"
-add_lib_if_included "ArduinoJson.h" "ArduinoJson"
-add_lib_if_included "U8g2lib.h" "U8g2"
-add_lib_if_included "FastLED.h" "FastLED"
-add_lib_if_included "PubSubClient.h" "PubSubClient"
-add_lib_if_included "AsyncTCP.h" "AsyncTCP"
-add_lib_if_included "ESPAsyncWebServer.h" "ESPAsyncWebServer"
-add_lib_if_included "DHT.h" "DHT sensor library"
-add_lib_if_included "OneWire.h" "OneWire"
-add_lib_if_included "DallasTemperature.h" "DallasTemperature"
-add_lib_if_included "lvgl.h" "lvgl"
-add_lib_if_included "LovyanGFX.hpp" "LovyanGFX"
-add_lib_if_included "LovyanGFX.h" "LovyanGFX"
-add_lib_if_included "TinyGPSPlus.h" "TinyGPSPlus"
-add_lib_if_included "MPU6050.h" "MPU6050"
+map_header_to_lib() {
+    local h="$1"
+    case "$h" in
+        Adafruit_GFX.h) echo "Adafruit GFX Library" ;;
+        Adafruit_ST7735.h|Adafruit_ST7789.h) echo "Adafruit ST7735 and ST7789 Library" ;;
+        Adafruit_SSD1306.h) echo "Adafruit SSD1306" ;;
+        Adafruit_SH110X.h|Adafruit_SH1106.h|Adafruit_SH1107.h) echo "Adafruit SH110X" ;;
+        Adafruit_NeoPixel.h) echo "Adafruit NeoPixel" ;;
+        Adafruit_Sensor.h) echo "Adafruit Unified Sensor" ;;
+        Adafruit_BME280.h) echo "Adafruit BME280 Library" ;;
+        Adafruit_BMP280.h) echo "Adafruit BMP280 Library" ;;
+        Adafruit_MPU6050.h) echo "Adafruit MPU6050" ;;
+        Adafruit_AHTX0.h) echo "Adafruit AHTX0" ;;
+        Adafruit_MAX31865.h) echo "Adafruit MAX31865 library" ;;
+        Adafruit_ADS1X15.h) echo "Adafruit ADS1X15" ;;
+        Adafruit_INA219.h) echo "Adafruit INA219" ;;
+        Adafruit_VL53L0X.h) echo "Adafruit_VL53L0X" ;;
+        Adafruit_TCS34725.h) echo "Adafruit TCS34725" ;;
+        Adafruit_SHT31.h) echo "Adafruit SHT31 Library" ;;
+        Adafruit_EPD.h) echo "Adafruit EPD" ;;
+        Adafruit_ILI9341.h) echo "Adafruit ILI9341" ;;
+        Adafruit_BusIO_Register.h|Adafruit_I2CDevice.h|Adafruit_SPIDevice.h) echo "Adafruit BusIO" ;;
+        TFT_eSPI.h) echo "TFT_eSPI" ;;
+        ArduinoJson.h) echo "ArduinoJson" ;;
+        U8g2lib.h) echo "U8g2" ;;
+        FastLED.h) echo "FastLED" ;;
+        PubSubClient.h) echo "PubSubClient" ;;
+        AsyncTCP.h) echo "AsyncTCP" ;;
+        ESPAsyncWebServer.h) echo "ESPAsyncWebServer" ;;
+        DHT.h|DHT_U.h) echo "DHT sensor library" ;;
+        OneWire.h) echo "OneWire" ;;
+        DallasTemperature.h) echo "DallasTemperature" ;;
+        lvgl.h) echo "lvgl" ;;
+        LovyanGFX.hpp|LovyanGFX.h) echo "LovyanGFX" ;;
+        TinyGPSPlus.h) echo "TinyGPSPlus" ;;
+        MPU6050.h) echo "MPU6050" ;;
+        LiquidCrystal_I2C.h) echo "LiquidCrystal I2C" ;;
+        LiquidCrystal.h) echo "LiquidCrystal" ;;
+        RTClib.h) echo "RTClib" ;;
+        Encoder.h) echo "Encoder" ;;
+        Bounce2.h) echo "Bounce2" ;;
+        ESP32Servo.h|Servo.h) echo "ESP32Servo" ;;
+        NTPClient.h) echo "NTPClient" ;;
+        WebSocketsClient.h|WebSocketsServer.h) echo "WebSockets" ;;
+        AsyncMqttClient.h) echo "AsyncMqttClient" ;;
+        IRremoteESP8266.h) echo "IRremoteESP8266" ;;
+        IRremote.h) echo "IRremote" ;;
+        ESP8266Audio.h|AudioFileSourceSPIFFS.h) echo "ESP8266Audio" ;;
+        TFT_eWidget.h) echo "TFT_eWidget" ;;
+        Button2.h) echo "Button2" ;;
+        *) echo "" ;;
+    esac
+}
 
-# 去重并安装所需第三方库
-if [ ${#LIBS_TO_INSTALL[@]} -gt 0 ]; then
-    # 通过排序去重
-    UNIQUE_LIBS=($(printf "%s\n" "${LIBS_TO_INSTALL[@]}" | sort -u))
-    echo "[Arduino Builder] 识别到 ${#UNIQUE_LIBS[@]} 个依赖库需求: ${UNIQUE_LIBS[*]}"
+# 提取源码中的所有 #include <Header.h> 并匹配依赖
+RAW_INCLUDES=$(grep -rohE '^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"][^>"]+[>"]' "$SRC_DIR" 2>/dev/null \
+    | sed -E 's/^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"]//; s/[>"].*$//' \
+    | sort -u || true)
+
+while IFS= read -r header; do
+    [ -z "$header" ] && continue
+    if is_builtin_or_local "$header"; then
+        continue
+    fi
+
+    # 1. 优先查高频流行库字典
+    mapped=$(map_header_to_lib "$header")
+    if [ -n "$mapped" ]; then
+        LIBS_TO_INSTALL+=("$mapped")
+        continue
+    fi
+
+    # 2. 若字典未收录，提取头文件主干并在官方库索引中动态模糊匹配
+    stem=$(basename "$header" | sed 's/\.[^.]*$//')
+    if [ -n "$stem" ]; then
+        searched=$(arduino-cli lib search "$stem" --names 2>/dev/null | grep -E '^Name: ' | head -n 1 | sed 's/^Name: "//; s/"$//' || true)
+        if [ -n "$searched" ]; then
+            LIBS_TO_INSTALL+=("$searched")
+        else
+            LIBS_TO_INSTALL+=("$stem")
+        fi
+    fi
+done <<< "$RAW_INCLUDES"
+
+# 2.4 使用关联数组安全去重（严格保留库名称内部的空格）
+declare -A SEEN_MAP=()
+UNIQUE_LIBS=()
+for item in "${LIBS_TO_INSTALL[@]}"; do
+    trimmed=$(echo "$item" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    [ -z "$trimmed" ] && continue
+    if [ -z "${SEEN_MAP["$trimmed"]}" ]; then
+        SEEN_MAP["$trimmed"]=1
+        UNIQUE_LIBS+=("$trimmed")
+    fi
+done
+
+if [ ${#UNIQUE_LIBS[@]} -gt 0 ]; then
+    echo "[Arduino Builder] 识别到 ${#UNIQUE_LIBS[@]} 个依赖库需求:"
+    for lib in "${UNIQUE_LIBS[@]}"; do
+        echo "  - $lib"
+    done
 
     for lib in "${UNIQUE_LIBS[@]}"; do
         [ -z "$lib" ] && continue
@@ -142,12 +229,19 @@ if [ ${#LIBS_TO_INSTALL[@]} -gt 0 ]; then
         fi
 
         if [ $INSTALLED -eq 1 ]; then
-            echo "[Arduino Builder] 依赖库已就绪 (本地缓存): $lib"
+            echo "[Arduino Builder] 依赖库已就绪 (本地缓存): \"$lib\""
         else
-            echo "[Arduino Builder] [LIBRARY_DOWNLOAD] 正在自动下载并安装依赖库: $lib ..."
-            arduino-cli lib install "$lib" 2>&1 || {
-                echo "[Arduino Builder] 警告: 安装依赖库 $lib 遇到非致命错误，将继续尝试编译"
-            }
+            echo "[Arduino Builder] [LIBRARY_DOWNLOAD] 正在自动下载并安装依赖库: \"$lib\" ..."
+            if arduino-cli lib install "$lib" 2>&1; then
+                echo "[Arduino Builder] 成功安装依赖库: \"$lib\""
+            else
+                echo "[Arduino Builder] 提示: 通过 \"$lib\" 安装未成功，尝试在官方库索引中模糊搜索..."
+                fuzzy=$(arduino-cli lib search "$lib" --names 2>/dev/null | grep -E '^Name: ' | head -n 1 | sed 's/^Name: "//; s/"$//' || true)
+                if [ -n "$fuzzy" ] && [ "$fuzzy" != "$lib" ]; then
+                    echo "[Arduino Builder] 匹配到最佳驱动库: \"$fuzzy\"，正在安装..."
+                    arduino-cli lib install "$fuzzy" 2>&1 || true
+                fi
+            fi
         fi
     done
 else
