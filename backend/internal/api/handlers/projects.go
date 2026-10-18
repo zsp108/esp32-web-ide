@@ -176,7 +176,22 @@ func (h *ProjectsHandler) ListBySession(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, projects)
+	// 附带每个项目的最新编译任务信息，便于首页展示后台编译状态
+	type ProjectResponse struct {
+		models.Project
+		LatestBuild *models.BuildRecord `json:"latest_build,omitempty"`
+	}
+
+	resp := make([]ProjectResponse, len(projects))
+	for i, p := range projects {
+		resp[i].Project = p
+		var latest models.BuildRecord
+		if err := h.db.DB.Where("project_id = ?", p.ID).Order("created_at DESC").First(&latest).Error; err == nil {
+			resp[i].LatestBuild = &latest
+		}
+	}
+
+	c.JSON(http.StatusOK, resp)
 }
 
 // Delete godoc

@@ -4,6 +4,7 @@ package services
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -72,7 +73,8 @@ func (s *BuildService) Run(ctx context.Context, buildID, projectID string) error
 
 	// 更新为 running 状态
 	s.db.DB.Model(&build).Update("status", models.BuildStatusRunning)
-	s.publishLog(buildID, "[INFO] 编译任务开始")
+	s.publishProgress(buildID, 10, "正在准备项目源码...")
+	s.publishLog(buildID, "[INFO] 编译任务开始（后台运行中）")
 
 	// 2. 准备临时源码目录
 	srcDir, err := os.MkdirTemp("", "esp32-build-*")
@@ -108,10 +110,12 @@ func (s *BuildService) Run(ctx context.Context, buildID, projectID string) error
 	}
 
 	image, cmd, env := s.resolveImageAndCmd(&build, srcDir)
+	s.publishProgress(buildID, 20, "启动沙箱容器编译...")
 	s.publishLog(buildID, fmt.Sprintf("[INFO] 使用镜像: %s", image))
 
 	// 收集编译日志
 	var logBuf strings.Builder
+	lastPercent := 25
 	opts := BuildOptions{
 		Image:          image,
 		Cmd:            cmd,
@@ -126,6 +130,34 @@ func (s *BuildService) Run(ctx context.Context, buildID, projectID string) error
 		LogCallback: func(line string) {
 			logBuf.WriteString(line + "\n")
 			s.publishLog(buildID, line)
+
+			lower := strings.ToLower(line)
+			if strings.Contains(lower, "compiling sketch") || strings.Contains(lower, "compiling project") {
+				if lastPercent < 35 {
+					lastPercent = 35
+					s.publishProgress(buildID, 35, "编译项目源码...")
+				}
+			} else if strings.Contains(lower, "compiling libraries") || strings.Contains(lower, "compiling library") {
+				if lastPercent < 55 {
+					lastPercent = 55
+					s.publishProgress(buildID, 55, "编译依赖库...")
+				}
+			} else if strings.Contains(lower, "compiling core") {
+				if lastPercent < 75 {
+					lastPercent = 75
+					s.publishProgress(buildID, 75, "编译核心框架...")
+				}
+			} else if strings.Contains(lower, "linking") || strings.Contains(lower, "building target") {
+				if lastPercent < 88 {
+					lastPercent = 88
+					s.publishProgress(buildID, 88, "链接生成固件...")
+				}
+			} else if strings.Contains(lower, "generating") || strings.Contains(lower, "creating esp32 image") {
+				if lastPercent < 92 {
+					lastPercent = 92
+					s.publishProgress(buildID, 92, "打包二进制固件...")
+				}
+			}
 		},
 	}
 
@@ -147,8 +179,11 @@ func (s *BuildService) Run(ctx context.Context, buildID, projectID string) error
 			"error_msg":   buildErr.Error(),
 		})
 		s.publishLog(buildID, "[ERROR] "+buildErr.Error())
+		s.publishDone(buildID, "failed", "", buildErr.Error())
 		return buildErr
 	}
+
+	s.publishProgress(buildID, 95, "正在保存固件产物...")
 
 	// 4. 上传编译产物：优先查找 merged-firmware.bin，回退到 firmware.bin
 	binPath := resolveBinPath(srcDir, outputDir, build.Framework)
@@ -169,6 +204,8 @@ func (s *BuildService) Run(ctx context.Context, buildID, projectID string) error
 	})
 
 	s.publishLog(buildID, fmt.Sprintf("[SUCCESS] 编译完成，耗时 %dms", durationMs))
+	s.publishProgress(buildID, 100, "编译成功")
+	s.publishDone(buildID, "success", fmt.Sprintf("/api/v1/builds/%s/download", buildID), "")
 	return nil
 }
 
@@ -347,6 +384,87 @@ func (s *BuildService) uploadBin(ctx context.Context, localPath, storageKey stri
 	return size, nil
 }
 
+// WSMessage 定义 WebSocket 与 Redis 中存储的统一消息结构。
+type WSMessage struct {
+	Type    string `json:"type"`              // "log" | "progress" | "done"
+	Level   string `json:"level,omitempty"`   // "info" | "error" | "warning"
+	Text    string `json:"text,omitempty"`
+	Percent int    `json:"percent,omitempty"`
+	Stage   string `json:"stage,omitempty"`
+	Status  string `json:"status,omitempty"`
+	BinURL  string `json:"bin_url,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+// publishMessage 统一负责消息推送：
+//  1. 追加到 Redis 列表 (build:{id}:logs)，保留24小时，供掉线重连/新连接客户端完整回放历史日志
+//  2. 记录当前最新进度 (build:{id}:progress) 和阶段 (build:{id}:stage)
+//  3. 发布到 Redis Pub/Sub channel (build:{id}:log) 进行实时广播
+func (s *BuildService) publishMessage(buildID string, msg WSMessage) {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
+	ctx := context.Background()
+	jsonStr := string(data)
+
+	// 1. 保留日志与事件至 Redis 列表（保留24小时），供离线/新加入的 WS 客户端与轮询即时回放
+	listKey := "build:" + buildID + ":logs"
+	s.redis.RPush(ctx, listKey, jsonStr)
+	s.redis.Expire(ctx, listKey, 24*time.Hour)
+
+	// 2. 缓存进度和阶段
+	if msg.Percent > 0 {
+		s.redis.Set(ctx, "build:"+buildID+":progress", msg.Percent, 24*time.Hour)
+	}
+	if msg.Stage != "" {
+		s.redis.Set(ctx, "build:"+buildID+":stage", msg.Stage, 24*time.Hour)
+	}
+
+	// 3. 发布到 Redis Pub/Sub 广播实时推送
+	channel := "build:" + buildID + ":log"
+	if err := s.redis.Publish(ctx, channel, jsonStr).Err(); err != nil {
+		s.logger.Warn("发布消息失败", zap.String("channel", channel), zap.Error(err))
+	}
+}
+
+// publishLog 封装日志行推送。
+func (s *BuildService) publishLog(buildID, line string) {
+	level := "info"
+	lower := strings.ToLower(line)
+	if strings.Contains(line, "[ERROR]") || strings.Contains(lower, "error:") || strings.Contains(lower, "fatal error") {
+		level = "error"
+	} else if strings.Contains(line, "[WARN") || strings.Contains(lower, "warning:") {
+		level = "warning"
+	}
+	s.publishMessage(buildID, WSMessage{
+		Type:  "log",
+		Level: level,
+		Text:  line,
+	})
+}
+
+// publishProgress 封装编译阶段进度推送。
+func (s *BuildService) publishProgress(buildID string, percent int, stage string) {
+	s.publishMessage(buildID, WSMessage{
+		Type:    "progress",
+		Percent: percent,
+		Stage:   stage,
+		Text:    stage,
+	})
+}
+
+// publishDone 封装编译完成/失败事件推送。
+func (s *BuildService) publishDone(buildID string, status string, binURL, errMsg string) {
+	s.publishMessage(buildID, WSMessage{
+		Type:    "done",
+		Status:  status,
+		BinURL:  binURL,
+		Error:   errMsg,
+		Percent: 100,
+	})
+}
+
 // failBuild 将编译记录更新为失败状态，并返回原始错误。
 func (s *BuildService) failBuild(build *models.BuildRecord, buildID string, err error) error {
 	s.db.DB.Model(build).Updates(map[string]interface{}{
@@ -354,13 +472,6 @@ func (s *BuildService) failBuild(build *models.BuildRecord, buildID string, err 
 		"error_msg": err.Error(),
 	})
 	s.publishLog(buildID, "[ERROR] "+err.Error())
+	s.publishDone(buildID, "failed", "", err.Error())
 	return err
-}
-
-// publishLog 通过 Redis Pub/Sub 发布编译日志行。
-func (s *BuildService) publishLog(buildID, line string) {
-	channel := "build:" + buildID + ":log"
-	if err := s.redis.Publish(context.Background(), channel, line).Err(); err != nil {
-		s.logger.Warn("发布日志失败", zap.String("channel", channel), zap.Error(err))
-	}
 }

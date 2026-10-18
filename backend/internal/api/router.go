@@ -30,7 +30,7 @@ func NewRouter(cfg *config.Config, database *db.Database, storage services.Stora
 	importHandler := handlers.NewImportHandler(database, logger)
 
 	// WebSocket Hub（负责日志广播）
-	hub := ws.NewHub(cfg, logger)
+	hub := ws.NewHub(cfg, database, logger)
 	go hub.Run()
 	wsHandler := ws.NewHandler(hub, logger)
 

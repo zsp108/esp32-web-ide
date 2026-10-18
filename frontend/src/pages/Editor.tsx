@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import Editor from '@monaco-editor/react'
@@ -34,6 +34,7 @@ export default function EditorPage() {
   const [buildId, setBuildId] = useState<string | null>(null)
   const [buildStatus, setBuildStatus] = useState<'idle' | 'building' | 'success' | 'failed'>('idle')
   const [buildProgress, setBuildProgress] = useState(0)
+  const [buildStage, setBuildStage] = useState<string>('')
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [binUrl, setBinUrl] = useState<string | null>(null)
   const [flashing, setFlashing] = useState(false)
@@ -53,7 +54,69 @@ export default function EditorPage() {
     queryFn: boardsApi.list,
   })
 
-  const currentBoard = selectedBoard || project?.board_fqbn || 'esp32:esp32:esp32'
+  // 轮询/查询项目编译历史，支持切页/返回首页后无缝恢复
+  const { data: projectBuilds = [], refetch: refetchBuilds } = useQuery({
+    queryKey: ['builds', projectId],
+    queryFn: () => buildsApi.listByProject(projectId!),
+    enabled: !!projectId,
+    refetchInterval: (query) => {
+      const data = query.state.data as any[] | undefined
+      const latest = data?.[0]
+      return (latest?.status === 'running' || latest?.status === 'pending') ? 2500 : false
+    },
+  })
+
+  const latestBuild = projectBuilds?.[0]
+  const currentBoard = selectedBoard || latestBuild?.board_fqbn || project?.board_fqbn || 'esp32:esp32:esp32'
+
+  // 从编译历史恢复状态和日志
+  useEffect(() => {
+    if (!projectBuilds || projectBuilds.length === 0) return
+    const latest = projectBuilds[0]
+
+    if (!buildId || buildId === latest.id) {
+      setBuildId(latest.id)
+      if (latest.board_fqbn && !selectedBoard) {
+        setSelectedBoard(latest.board_fqbn)
+      }
+
+      if (latest.status === 'running' || latest.status === 'pending') {
+        setBuildStatus('building')
+        setBuildStage(latest.stage || (latest.status === 'pending' ? '等待编译队列调度...' : '后台编译进行中...'))
+        if (typeof latest.progress === 'number' && latest.progress > 0) {
+          setBuildProgress(latest.progress)
+        }
+      } else if (latest.status === 'success') {
+        setBuildStatus('success')
+        setBuildProgress(100)
+        setBuildStage('编译成功')
+        setBinUrl(buildsApi.downloadUrl(latest.id))
+        if (logs.length === 0 && latest.build_log) {
+          const lines = latest.build_log.split('\n').filter(Boolean)
+          setLogs(lines.map((line: string) => {
+            let level: 'info' | 'error' | 'warning' = 'info'
+            const lower = line.toLowerCase()
+            if (line.includes('[ERROR]') || lower.includes('error:')) level = 'error'
+            else if (line.includes('[WARN') || lower.includes('warning:')) level = 'warning'
+            return { level, text: line }
+          }))
+        }
+      } else if (latest.status === 'failed' || latest.status === 'timeout') {
+        setBuildStatus('failed')
+        setBuildStage(latest.error_msg || '编译失败')
+        if (logs.length === 0 && latest.build_log) {
+          const lines = latest.build_log.split('\n').filter(Boolean)
+          setLogs(lines.map((line: string) => {
+            let level: 'info' | 'error' | 'warning' = 'info'
+            const lower = line.toLowerCase()
+            if (line.includes('[ERROR]') || lower.includes('error:')) level = 'error'
+            else if (line.includes('[WARN') || lower.includes('warning:')) level = 'warning'
+            return { level, text: line }
+          }))
+        }
+      }
+    }
+  }, [projectBuilds, buildId, selectedBoard, logs.length])
 
   const appendLog = useCallback((entry: LogEntry) => {
     setLogs(prev => [...prev, entry])
@@ -64,13 +127,17 @@ export default function EditorPage() {
     if (msg.type === 'log' && msg.text) {
       appendLog({ level: msg.level ?? 'info', text: msg.text })
     } else if (msg.type === 'progress') {
-      setBuildProgress(msg.percent ?? 0)
+      if (typeof msg.percent === 'number') setBuildProgress(msg.percent)
+      if (msg.stage) setBuildStage(msg.stage)
     } else if (msg.type === 'done') {
       setBuildStatus(msg.status === 'success' ? 'success' : 'failed')
+      setBuildProgress(msg.status === 'success' ? 100 : 0)
+      if (msg.stage) setBuildStage(msg.stage)
       if (msg.bin_url) setBinUrl(msg.bin_url)
       if (msg.error) appendLog({ level: 'error', text: msg.error })
+      refetchBuilds()
     }
-  }, [appendLog])
+  }, [appendLog, refetchBuilds])
 
   useWebSocket(buildId, onWsMessage)
 
@@ -83,21 +150,25 @@ export default function EditorPage() {
       project_id: projectId!,
       framework: project?.framework ?? 'arduino',
       board: currentBoard,
+      board_fqbn: currentBoard,
     }),
     onMutate: () => {
       setBuildStatus('building')
-      setBuildProgress(0)
+      setBuildProgress(10)
+      setBuildStage('正在提交编译任务至后台...')
       setLogs([])
       setBinUrl(null)
-      setRightPanel('logs')
-      appendLog({ level: 'info', text: '正在提交编译任务...' })
+      setRightPanel('build')
+      appendLog({ level: 'info', text: '正在提交编译任务至后台...' })
     },
     onSuccess: (data: { id: string }) => {
       setBuildId(data.id)
-      appendLog({ level: 'info', text: `编译任务已创建: ${data.id}` })
+      appendLog({ level: 'info', text: `编译任务已在后台启动: ${data.id}` })
+      refetchBuilds()
     },
     onError: () => {
       setBuildStatus('failed')
+      setBuildStage('提交任务失败')
       appendLog({ level: 'error', text: '无法提交编译任务，请检查后端连接' })
     },
   })
@@ -148,10 +219,31 @@ export default function EditorPage() {
     },
   ] : []
 
-  const panelTabs: { id: RightPanel; label: string }[] = [
+  const panelTabs: { id: RightPanel; label: string; badge?: React.ReactNode }[] = [
     { id: 'device', label: '设备' },
-    { id: 'build', label: '编译' },
-    { id: 'logs', label: '日志' },
+    {
+      id: 'build',
+      label: '编译',
+      badge: buildStatus === 'building' ? (
+        <span className="flex items-center gap-1 text-[10px] bg-blue-500/20 text-blue-300 px-1.5 py-0.5 rounded-full font-mono animate-pulse">
+          <Loader2 size={10} className="animate-spin" />
+          {buildProgress}%
+        </span>
+      ) : buildStatus === 'success' ? (
+        <span className="w-2 h-2 rounded-full bg-green-400" />
+      ) : buildStatus === 'failed' ? (
+        <span className="w-2 h-2 rounded-full bg-red-400" />
+      ) : null,
+    },
+    {
+      id: 'logs',
+      label: '日志',
+      badge: logs.length > 0 ? (
+        <span className="text-[10px] bg-dark-600 text-gray-400 px-1.5 rounded-full font-mono">
+          {logs.length}
+        </span>
+      ) : null,
+    },
     { id: 'flash', label: '刷写' },
   ]
 
@@ -203,6 +295,18 @@ export default function EditorPage() {
         </div>
 
         <div className="flex-1" />
+
+        {/* 顶部后台编译状态提示 */}
+        {buildStatus === 'building' && (
+          <button
+            onClick={() => setRightPanel('build')}
+            className="flex items-center gap-1.5 text-xs bg-blue-900/30 text-blue-300 border border-blue-700/50 rounded px-2.5 py-1 hover:bg-blue-900/50 transition-colors animate-pulse"
+            title="点击查看后台编译进度"
+          >
+            <Loader2 size={12} className="animate-spin text-blue-400" />
+            <span>后台编译中 ({buildProgress}%)</span>
+          </button>
+        )}
 
         {/* Device status */}
         {device ? (
@@ -277,13 +381,14 @@ export default function EditorPage() {
                 key={tab.id}
                 onClick={() => setRightPanel(tab.id)}
                 className={clsx(
-                  'flex-1 text-xs py-2 font-medium transition-colors',
+                  'flex-1 text-xs py-2 font-medium transition-colors flex items-center justify-center gap-1.5',
                   rightPanel === tab.id
                     ? 'text-blue-400 border-b-2 border-blue-400'
                     : 'text-gray-500 hover:text-gray-300'
                 )}
               >
-                {tab.label}
+                <span>{tab.label}</span>
+                {tab.badge}
               </button>
             ))}
           </div>
@@ -304,12 +409,16 @@ export default function EditorPage() {
               <BuildPanel
                 status={buildStatus}
                 progress={buildProgress}
+                stage={buildStage}
                 onBuild={handleBuild}
                 binUrl={binUrl}
                 buildId={buildId}
                 boards={boards}
                 currentBoard={currentBoard}
                 onSelectBoard={setSelectedBoard}
+                onViewLogs={() => setRightPanel('logs')}
+                framework={project?.framework}
+                latestBuild={latestBuild}
               />
             )}
 
@@ -432,92 +541,210 @@ function DevicePanel({ device, connecting, error, isSupported, onConnect, onDisc
   )
 }
 
-function BuildPanel({ status, progress, onBuild, binUrl, buildId, boards, currentBoard, onSelectBoard }: {
+function BuildPanel({
+  status,
+  progress,
+  stage,
+  onBuild,
+  binUrl,
+  buildId,
+  boards,
+  currentBoard,
+  onSelectBoard,
+  onViewLogs,
+  framework,
+  latestBuild,
+}: {
   status: 'idle' | 'building' | 'success' | 'failed'
   progress: number
+  stage: string
   onBuild: () => void
   binUrl: string | null
   buildId: string | null
   boards: any[]
   currentBoard: string
   onSelectBoard: (board: string) => void
+  onViewLogs: () => void
+  framework?: string
+  latestBuild?: any
 }) {
+  const boardObj = boards.find((b: any) => (b.fqbn || b.id) === currentBoard)
+  const boardName = boardObj?.name || currentBoard
+
   return (
     <div className="space-y-4">
-      <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">编译设置</h3>
-
-      <div>
-        <label className="block text-xs text-gray-400 mb-1.5 font-medium">目标开发板</label>
-        <select
-          value={currentBoard}
-          onChange={e => onSelectBoard(e.target.value)}
-          disabled={status === 'building'}
-          className="w-full bg-dark-900 border border-dark-500 rounded-md px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-blue-500 disabled:opacity-50"
-        >
-          {(boards.length > 0 ? boards : [
-            { fqbn: 'esp32:esp32:esp32', name: 'ESP32 DevKitC' },
-            { fqbn: 'esp32:esp32:esp32s3', name: 'ESP32-S3 DevKit' },
-            { fqbn: 'esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi', name: 'ESP32-S3 N16R8 (16MB Flash / 8MB OPI PSRAM)' },
-            { fqbn: 'esp32:esp32:esp32c3', name: 'ESP32-C3' },
-            { fqbn: 'esp32:esp32:esp32s2', name: 'ESP32-S2' },
-            { fqbn: 'waveshare:esp32s3:touch_amoled_175c', name: 'Waveshare ESP32-S3-Touch-AMOLED-1.75C' },
-          ]).map((b: any) => {
-            const fqbn = b.fqbn || b.id || ''
-            return (
-              <option key={fqbn} value={fqbn}>{b.name}</option>
-            )
-          })}
-        </select>
-      </div>
-
-      <button
-        onClick={onBuild}
-        disabled={status === 'building'}
-        className="w-full flex items-center justify-center gap-2 bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white text-sm py-2 rounded-md font-medium transition-colors"
-      >
-        {status === 'building' ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-        {status === 'building' ? '编译中...' : '开始编译'}
-      </button>
-
+      {/* 1. 实时任务与进度状态卡片 */}
       {status === 'building' && (
-        <div>
-          <div className="flex justify-between text-xs text-gray-500 mb-1">
-            <span>进度</span>
-            <span>{progress}%</span>
+        <div className="bg-blue-950/40 border border-blue-500/40 rounded-lg p-3 space-y-2.5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-blue-400">
+              <Loader2 size={16} className="animate-spin" />
+              <span className="text-xs font-semibold uppercase tracking-wider">后台编译进行中</span>
+            </div>
+            <span className="text-xs font-mono font-bold text-blue-300">{progress}%</span>
           </div>
-          <div className="h-1.5 bg-dark-700 rounded-full overflow-hidden">
+
+          <div className="h-2 bg-dark-700 rounded-full overflow-hidden">
             <div
-              className="h-full bg-blue-500 rounded-full transition-all duration-300"
-              style={{ width: `${progress}%` }}
+              className="h-full bg-gradient-to-r from-blue-600 to-cyan-400 rounded-full transition-all duration-300"
+              style={{ width: `${Math.max(progress, 5)}%` }}
             />
           </div>
+
+          <div className="text-[11px] text-gray-300 flex items-center justify-between">
+            <span className="truncate">{stage || '正在编译中...'}</span>
+            <button
+              onClick={onViewLogs}
+              className="text-blue-400 hover:text-blue-200 shrink-0 ml-2 underline text-[11px]"
+            >
+              实时日志 →
+            </button>
+          </div>
+
+          <p className="text-[11px] text-gray-400 leading-relaxed bg-dark-800/80 p-2 rounded border border-dark-600/50">
+            ℹ️ 编译任务在服务器 Docker 容器中独立运行。您可以返回首页或切换到其他项目，任务不会中断。
+          </p>
         </div>
       )}
 
       {status === 'success' && (
-        <div className="flex items-center gap-2 text-green-400 bg-green-900/20 rounded p-2 text-xs">
-          <CheckCircle2 size={14} />
-          <span>编译成功</span>
+        <div className="bg-green-950/30 border border-green-500/40 rounded-lg p-3 space-y-2.5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-green-400">
+              <CheckCircle2 size={16} />
+              <span className="text-xs font-semibold uppercase tracking-wider">编译成功</span>
+            </div>
+            {latestBuild?.duration_ms && (
+              <span className="text-[11px] text-gray-400 font-mono">
+                {(latestBuild.duration_ms / 1000).toFixed(1)}s
+              </span>
+            )}
+          </div>
+
+          <div className="text-xs text-gray-300 space-y-1">
+            {latestBuild?.bin_size_bytes ? (
+              <div className="flex justify-between text-xs text-gray-400">
+                <span>固件大小:</span>
+                <span className="text-gray-200 font-mono">
+                  {(latestBuild.bin_size_bytes / 1024).toFixed(1)} KB
+                </span>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="flex gap-2 pt-1">
+            {binUrl && (
+              <a
+                href={binUrl}
+                download
+                className="flex-1 flex items-center justify-center gap-1.5 bg-green-700 hover:bg-green-600 text-white text-xs py-2 rounded font-medium transition-colors"
+              >
+                <Download size={13} />
+                下载固件 (.bin)
+              </a>
+            )}
+            <button
+              onClick={onViewLogs}
+              className="flex items-center justify-center gap-1 bg-dark-700 hover:bg-dark-600 text-gray-300 text-xs px-3 py-2 rounded border border-dark-500 transition-colors"
+            >
+              查看日志
+            </button>
+          </div>
         </div>
       )}
 
       {status === 'failed' && (
-        <div className="flex items-center gap-2 text-red-400 bg-red-900/20 rounded p-2 text-xs">
-          <XCircle size={14} />
-          <span>编译失败，查看日志了解详情</span>
+        <div className="bg-red-950/30 border border-red-500/40 rounded-lg p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-red-400">
+              <XCircle size={16} />
+              <span className="text-xs font-semibold uppercase tracking-wider">编译未通过</span>
+            </div>
+          </div>
+          <p className="text-xs text-red-300 line-clamp-3 bg-red-950/40 p-2 rounded font-mono text-[11px]">
+            {latestBuild?.error_msg || stage || '编译过程中出错，请查看日志详情'}
+          </p>
+          <button
+            onClick={onViewLogs}
+            className="w-full flex items-center justify-center gap-1 text-xs text-red-300 hover:text-red-200 bg-red-900/30 hover:bg-red-900/50 py-1.5 rounded transition-colors"
+          >
+            查看编译日志详情 →
+          </button>
         </div>
       )}
 
-      {binUrl && buildId && (
-        <a
-          href={binUrl}
-          download
-          className="flex items-center justify-center gap-2 bg-dark-700 hover:bg-dark-600 text-gray-200 text-xs py-2 rounded-md border border-dark-500 transition-colors"
-        >
-          <Download size={13} />
-          下载固件 (.bin)
-        </a>
+      {/* 2. 当前编译任务详细信息 */}
+      {buildId && (
+        <div className="bg-dark-800 rounded-lg p-3 border border-dark-600 space-y-2">
+          <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">当前任务信息</h4>
+          <div className="space-y-1.5 text-xs text-gray-400">
+            <div className="flex justify-between items-center">
+              <span>任务编号</span>
+              <span className="font-mono text-gray-300 text-[11px]" title={buildId}>
+                {buildId.slice(0, 8)}...{buildId.slice(-4)}
+              </span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span>目标开发板</span>
+              <span className="text-gray-300 text-right truncate max-w-[140px]" title={boardName}>
+                {boardName}
+              </span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span>编译框架</span>
+              <span className="text-gray-300 uppercase font-mono text-[11px]">
+                {framework || 'arduino'}
+              </span>
+            </div>
+            {latestBuild?.created_at && (
+              <div className="flex justify-between items-center">
+                <span>提交时间</span>
+                <span className="text-gray-300 text-[11px]">
+                  {new Date(latestBuild.created_at).toLocaleTimeString()}
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
       )}
+
+      {/* 3. 编译设置与触发按钮 */}
+      <div className="bg-dark-800 rounded-lg p-3 border border-dark-600 space-y-3">
+        <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">编译设置</h4>
+
+        <div>
+          <label className="block text-xs text-gray-400 mb-1.5 font-medium">目标开发板</label>
+          <select
+            value={currentBoard}
+            onChange={e => onSelectBoard(e.target.value)}
+            disabled={status === 'building'}
+            className="w-full bg-dark-900 border border-dark-500 rounded-md px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-blue-500 disabled:opacity-50"
+          >
+            {(boards.length > 0 ? boards : [
+              { fqbn: 'esp32:esp32:esp32', name: 'ESP32 DevKitC' },
+              { fqbn: 'esp32:esp32:esp32s3', name: 'ESP32-S3 DevKit' },
+              { fqbn: 'esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi', name: 'ESP32-S3 N16R8 (16MB Flash / 8MB OPI PSRAM)' },
+              { fqbn: 'esp32:esp32:esp32c3', name: 'ESP32-C3' },
+              { fqbn: 'esp32:esp32:esp32s2', name: 'ESP32-S2' },
+              { fqbn: 'waveshare:esp32s3:touch_amoled_175c', name: 'Waveshare ESP32-S3-Touch-AMOLED-1.75C' },
+            ]).map((b: any) => {
+              const fqbn = b.fqbn || b.id || ''
+              return (
+                <option key={fqbn} value={fqbn}>{b.name}</option>
+              )
+            })}
+          </select>
+        </div>
+
+        <button
+          onClick={onBuild}
+          disabled={status === 'building'}
+          className="w-full flex items-center justify-center gap-2 bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white text-sm py-2 rounded-md font-medium transition-colors"
+        >
+          {status === 'building' ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+          {status === 'building' ? '后台编译中...' : status === 'success' || status === 'failed' ? '重新编译' : '开始编译'}
+        </button>
+      </div>
     </div>
   )
 }

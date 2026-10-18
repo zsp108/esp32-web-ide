@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/hibiken/asynq"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
 	"github.com/esp32-web-ide/backend/internal/config"
@@ -25,17 +26,25 @@ type BuildsHandler struct {
 	db          *db.Database
 	storage     services.StorageBackend
 	asynqClient *asynq.Client
+	redisClient *redis.Client
 	logger      *zap.Logger
 }
 
 // NewBuildsHandler 创建 BuildsHandler 实例。
 func NewBuildsHandler(cfg *config.Config, database *db.Database, storage services.StorageBackend, logger *zap.Logger) *BuildsHandler {
 	client := asynq.NewClient(asynq.RedisClientOpt{Addr: redisAddrFromURL(cfg.RedisURL)})
+	opt, err := redis.ParseURL(cfg.RedisURL)
+	if err != nil {
+		opt = &redis.Options{Addr: redisAddrFromURL(cfg.RedisURL)}
+	}
+	rdb := redis.NewClient(opt)
+
 	return &BuildsHandler{
 		cfg:         cfg,
 		db:          database,
 		storage:     storage,
 		asynqClient: client,
+		redisClient: rdb,
 		logger:      logger,
 	}
 }
@@ -43,6 +52,9 @@ func NewBuildsHandler(cfg *config.Config, database *db.Database, storage service
 // createBuildRequest 创建编译任务的请求体。
 type createBuildRequest struct {
 	ProjectID string `json:"project_id" binding:"required,uuid"`
+	Framework string `json:"framework"`
+	Board     string `json:"board"`
+	BoardFQBN string `json:"board_fqbn"`
 }
 
 // Create godoc
@@ -69,13 +81,29 @@ func (h *BuildsHandler) Create(c *gin.Context) {
 		return
 	}
 
+	framework := project.Framework
+	if req.Framework != "" {
+		framework = req.Framework
+	}
+	boardFQBN := project.BoardFQBN
+	if req.BoardFQBN != "" {
+		boardFQBN = req.BoardFQBN
+	} else if req.Board != "" {
+		boardFQBN = req.Board
+	}
+
+	// 若用户切换了板型，同步更新项目默认板型配置
+	if boardFQBN != project.BoardFQBN {
+		h.db.DB.Model(&project).Update("board_fqbn", boardFQBN)
+	}
+
 	// 创建编译记录
 	build := models.BuildRecord{
 		ID:        uuid.New(),
 		ProjectID: projectID,
 		Status:    models.BuildStatusPending,
-		Framework: project.Framework,
-		BoardFQBN: project.BoardFQBN,
+		Framework: framework,
+		BoardFQBN: boardFQBN,
 		CreatedAt: time.Now(),
 	}
 	if err := h.db.DB.Create(&build).Error; err != nil {
@@ -88,8 +116,8 @@ func (h *BuildsHandler) Create(c *gin.Context) {
 	payload, _ := json.Marshal(worker.CompilePayload{
 		BuildID:   build.ID.String(),
 		ProjectID: projectID.String(),
-		Framework: project.Framework,
-		BoardFQBN: project.BoardFQBN,
+		Framework: framework,
+		BoardFQBN: boardFQBN,
 	})
 	task := asynq.NewTask(worker.TaskCompile, payload)
 	_, err := h.asynqClient.Enqueue(task, asynq.MaxRetry(0))
@@ -124,7 +152,39 @@ func (h *BuildsHandler) Get(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, build)
+	progress := 0
+	stage := ""
+	if build.Status == models.BuildStatusRunning {
+		p, _ := h.redisClient.Get(c.Request.Context(), "build:"+id.String()+":progress").Int()
+		s, _ := h.redisClient.Get(c.Request.Context(), "build:"+id.String()+":stage").Result()
+		progress = p
+		stage = s
+		if progress == 0 {
+			progress = 10
+			stage = "正在后台编译中..."
+		}
+	} else if build.Status == models.BuildStatusSuccess {
+		progress = 100
+		stage = "编译成功"
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"id":              build.ID,
+		"project_id":      build.ProjectID,
+		"status":          build.Status,
+		"framework":       build.Framework,
+		"board_fqbn":      build.BoardFQBN,
+		"bin_storage_key": build.BinStorageKey,
+		"bin_size_bytes":  build.BinSizeBytes,
+		"flash_pct":       build.FlashPct,
+		"ram_pct":         build.RAMPct,
+		"build_log":       build.BuildLog,
+		"duration_ms":     build.DurationMs,
+		"error_msg":       build.ErrorMsg,
+		"created_at":      build.CreatedAt,
+		"progress":        progress,
+		"stage":           stage,
+	})
 }
 
 // Download godoc

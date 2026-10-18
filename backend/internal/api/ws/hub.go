@@ -4,13 +4,19 @@ package ws
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"sync"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
 	"github.com/esp32-web-ide/backend/internal/config"
+	"github.com/esp32-web-ide/backend/internal/db"
+	"github.com/esp32-web-ide/backend/internal/models"
 )
 
 // Client 表示单个 WebSocket 连接。
@@ -30,11 +36,12 @@ type Hub struct {
 	unregister chan *Client
 
 	redisClient *redis.Client
+	db          *db.Database
 	logger      *zap.Logger
 }
 
 // NewHub 创建 Hub 实例，redisURL 格式为 "redis://host:port/db"。
-func NewHub(cfg *config.Config, logger *zap.Logger) *Hub {
+func NewHub(cfg *config.Config, database *db.Database, logger *zap.Logger) *Hub {
 	opt, err := redis.ParseURL(cfg.RedisURL)
 	if err != nil {
 		logger.Warn("解析 Redis URL 失败，使用默认配置", zap.Error(err))
@@ -47,6 +54,7 @@ func NewHub(cfg *config.Config, logger *zap.Logger) *Hub {
 		register:    make(chan *Client, 64),
 		unregister:  make(chan *Client, 64),
 		redisClient: rdb,
+		db:          database,
 		logger:      logger,
 	}
 }
@@ -65,6 +73,9 @@ func (h *Hub) Run() {
 			h.clients[client.BuildID][client] = struct{}{}
 			h.mu.Unlock()
 			h.logger.Info("WS 客户端注册", zap.String("build_id", client.BuildID))
+
+			// 向新注册的客户端回放历史日志和当前任务状态
+			go h.sendBacklog(client)
 
 		case client := <-h.unregister:
 			h.mu.Lock()
@@ -129,3 +140,73 @@ func (h *Hub) subscribeRedis(buildID string) {
 
 	h.logger.Info("Redis channel 订阅结束", zap.String("channel", channel))
 }
+
+// sendBacklog 当新客户端连接时，回放已有的编译历史日志和最新状态。
+func (h *Hub) sendBacklog(client *Client) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	listKey := "build:" + client.BuildID + ":logs"
+	logs, err := h.redisClient.LRange(ctx, listKey, 0, -1).Result()
+	if err == nil && len(logs) > 0 {
+		for _, logMsg := range logs {
+			select {
+			case client.Send <- []byte(logMsg):
+			default:
+			}
+		}
+		return
+	}
+
+	// 若 Redis 中无日志（如编译已完成且键过期或服务重启），从数据库回放完整日志与状态
+	if h.db != nil {
+		bUUID, err := uuid.Parse(client.BuildID)
+		if err != nil {
+			return
+		}
+		var build models.BuildRecord
+		if err := h.db.DB.First(&build, "id = ?", bUUID).Error; err == nil {
+			if build.BuildLog != "" {
+				lines := strings.Split(build.BuildLog, "\n")
+				for _, line := range lines {
+					if line == "" {
+						continue
+					}
+					msg, _ := json.Marshal(map[string]interface{}{
+						"type":  "log",
+						"level": "info",
+						"text":  line,
+					})
+					select {
+					case client.Send <- msg:
+					default:
+					}
+				}
+			}
+			if build.Status == models.BuildStatusSuccess {
+				msg, _ := json.Marshal(map[string]interface{}{
+					"type":    "done",
+					"status":  "success",
+					"percent": 100,
+					"bin_url": "/api/v1/builds/" + client.BuildID + "/download",
+				})
+				select {
+				case client.Send <- msg:
+				default:
+				}
+			} else if build.Status == models.BuildStatusFailed || build.Status == models.BuildStatusTimeout {
+				msg, _ := json.Marshal(map[string]interface{}{
+					"type":    "done",
+					"status":  "failed",
+					"percent": 100,
+					"error":   build.ErrorMsg,
+				})
+				select {
+				case client.Send <- msg:
+				default:
+				}
+			}
+		}
+	}
+}
+

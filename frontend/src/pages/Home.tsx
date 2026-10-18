@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Cpu, Folder, ChevronRight, Loader2, AlertCircle, GitBranch } from 'lucide-react'
+import { Plus, Cpu, Folder, ChevronRight, Loader2, AlertCircle, GitBranch, CheckCircle2, XCircle } from 'lucide-react'
 import { projectsApi, boardsApi, importApi } from '../api/client'
 
 interface Board {
@@ -12,12 +12,21 @@ interface Board {
   idf_target?: string
 }
 
+interface LatestBuild {
+  id: string
+  status: 'pending' | 'running' | 'success' | 'failed' | 'timeout'
+  duration_ms?: number
+  created_at?: string
+  board_fqbn?: string
+}
+
 interface Project {
   id: string
   name: string
   framework: string
   board_fqbn: string
   created_at: string
+  latest_build?: LatestBuild
 }
 
 export default function HomePage() {
@@ -45,6 +54,11 @@ export default function HomePage() {
   const { data: projects = [], isLoading: loadingProjects } = useQuery<Project[]>({
     queryKey: ['projects'],
     queryFn: projectsApi.list,
+    refetchInterval: (query) => {
+      const list = query.state.data as Project[] | undefined
+      const hasRunning = list?.some(p => p.latest_build?.status === 'running' || p.latest_build?.status === 'pending')
+      return hasRunning ? 3000 : false
+    },
   })
 
   const { data: boards = [] } = useQuery<Board[]>({
@@ -147,7 +161,27 @@ export default function HomePage() {
                 className="flex items-center justify-between bg-dark-800 hover:bg-dark-700 border border-dark-600 rounded-lg px-5 py-4 text-left transition-colors group"
               >
                 <div>
-                  <div className="font-medium text-gray-100 group-hover:text-white">{p.name}</div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-gray-100 group-hover:text-white">{p.name}</span>
+                    {p.latest_build && (
+                      p.latest_build.status === 'running' || p.latest_build.status === 'pending' ? (
+                        <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium bg-blue-500/20 text-blue-400 border border-blue-500/30 animate-pulse">
+                          <Loader2 size={11} className="animate-spin" />
+                          后台编译中...
+                        </span>
+                      ) : p.latest_build.status === 'success' ? (
+                        <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-green-500/20 text-green-400 border border-green-500/30">
+                          <CheckCircle2 size={11} />
+                          编译就绪
+                        </span>
+                      ) : p.latest_build.status === 'failed' || p.latest_build.status === 'timeout' ? (
+                        <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-red-500/20 text-red-400 border border-red-500/30">
+                          <XCircle size={11} />
+                          编译未通过
+                        </span>
+                      ) : null
+                    )}
+                  </div>
                   <div className="text-xs text-gray-500 mt-1">
                     {p.framework.toUpperCase()} · {p.board_fqbn}
                   </div>

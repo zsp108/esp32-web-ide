@@ -26,7 +26,15 @@ export function useWebSocket(buildId: string | null, onMessage: (msg: WSMessage)
         const msg: WSMessage = JSON.parse(e.data)
         onMessage(msg)
       } catch {
-        // ignore malformed messages
+        const text = String(e.data)
+        let level: 'info' | 'error' | 'warning' = 'info'
+        const lower = text.toLowerCase()
+        if (text.includes('[ERROR]') || lower.includes('error:') || lower.includes('fatal error')) {
+          level = 'error'
+        } else if (text.includes('[WARN') || lower.includes('warning:')) {
+          level = 'warning'
+        }
+        onMessage({ type: 'log', level, text })
       }
     }
     ws.onclose = () => { wsRef.current = null }

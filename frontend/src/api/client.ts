@@ -43,9 +43,10 @@ export const filesApi = {
 }
 
 export const buildsApi = {
-  create: (data: { project_id: string; framework: string; board: string }) =>
+  create: (data: { project_id: string; framework?: string; board?: string; board_fqbn?: string }) =>
     apiClient.post('/builds', data).then(r => r.data),
   get: (id: string) => apiClient.get(`/builds/${id}`).then(r => r.data),
+  listByProject: (projectId: string) => apiClient.get(`/projects/${projectId}/builds`).then(r => r.data),
   downloadUrl: (id: string) => `/api/v1/builds/${id}/download`,
 }
 
