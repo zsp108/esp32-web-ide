@@ -17,6 +17,17 @@ if [ -n "$FIRST_INO" ]; then
     else
         SRC_DIR="$(dirname "$FIRST_INO")"
     fi
+else
+    # 若用户删除了 .ino 文件，但有 .cpp 或 .c 文件，创建兼容的 Arduino sketch 入口
+    FIRST_CPP=$(find "$SRC_DIR" -maxdepth 2 \( -name "*.cpp" -o -name "*.c" \) 2>/dev/null | head -n 1)
+    if [ -n "$FIRST_CPP" ]; then
+        echo "[Arduino Builder] 项目未包含 .ino 文件，检测到 C/C++ 源文件，正在生成 Arduino 规范入口..."
+        SKETCH_DIR="/tmp/sketch/sketch"
+        mkdir -p "$SKETCH_DIR"
+        cp -a "$SRC_DIR/." "$SKETCH_DIR/"
+        touch "$SKETCH_DIR/sketch.ino"
+        SRC_DIR="$SKETCH_DIR"
+    fi
 fi
 
 echo "[Arduino Builder] Starting compilation..."

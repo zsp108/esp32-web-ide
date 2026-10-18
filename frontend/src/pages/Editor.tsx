@@ -313,7 +313,9 @@ export default function EditorPage() {
     }
 
     let template = `// ${clean}\n`
-    if (clean.endsWith('.cpp')) {
+    if (clean.endsWith('.ino')) {
+      template = `#include <Arduino.h>\n\nvoid setup() {\n  Serial.begin(115200);\n  Serial.println("Hello ESP32!");\n}\n\nvoid loop() {\n  delay(1000);\n}\n`
+    } else if (clean.endsWith('.cpp')) {
       template = `#include <Arduino.h>\n\n// TODO: 实现相关代码\n`
     } else if (clean.endsWith('.h') || clean.endsWith('.hpp')) {
       template = `#pragma once\n#include <Arduino.h>\n\n// TODO: 声明函数与类\n`
@@ -337,7 +339,16 @@ export default function EditorPage() {
   // 删除文件
   const handleDeleteFile = async (filePath: string, e: React.MouseEvent) => {
     e.stopPropagation()
-    if (!window.confirm(`确定要删除文件「${filePath}」吗？`)) return
+    const isIno = filePath.endsWith('.ino')
+    const totalFiles = projectFiles.length
+    const inoFiles = projectFiles.filter(f => f.path.endsWith('.ino'))
+    let confirmMsg = `确定要删除文件「${filePath}」吗？`
+    if (totalFiles <= 1) {
+      confirmMsg = `「${filePath}」是当前项目中唯一的文件，删除后项目将没有代码文件。确定要删除吗？`
+    } else if (isIno && inoFiles.length === 1 && !projectFiles.some(f => f.path.endsWith('.cpp') || f.path.endsWith('.c'))) {
+      confirmMsg = `「${filePath}」是当前项目中唯一的入口文件 (.ino)，若删除请确保创建新的 .ino 或 .cpp 文件以便正常编译。确定要删除吗？`
+    }
+    if (!window.confirm(confirmMsg)) return
     try {
       await filesApi.delete(projectId!, filePath)
       await refetchFiles()
@@ -351,7 +362,7 @@ export default function EditorPage() {
         }
       }
     } catch (err: any) {
-      alert(`删除文件失败: ${err.message}`)
+      alert(`删除文件失败: ${err.response?.data?.error || err.message}`)
     }
   }
 
@@ -544,8 +555,6 @@ export default function EditorPage() {
                 iconColor = 'text-purple-400'
               }
 
-              const isMainIno = file.path.endsWith('.ino')
-
               return (
                 <div
                   key={file.path}
@@ -559,15 +568,13 @@ export default function EditorPage() {
                     <Icon size={14} className={clsx('shrink-0', iconColor)} />
                     <span className="truncate">{file.path}</span>
                   </div>
-                  {!isMainIno && (
-                    <button
-                      onClick={(e) => handleDeleteFile(file.path, e)}
-                      className="opacity-0 group-hover:opacity-100 p-1 text-gray-500 hover:text-red-400 rounded transition-all shrink-0 ml-1"
-                      title={`删除 ${file.path}`}
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  )}
+                  <button
+                    onClick={(e) => handleDeleteFile(file.path, e)}
+                    className="opacity-0 group-hover:opacity-100 p-1 text-gray-500 hover:text-red-400 rounded transition-all shrink-0 ml-1"
+                    title={`删除 ${file.path}`}
+                  >
+                    <Trash2 size={12} />
+                  </button>
                 </div>
               )
             })}
