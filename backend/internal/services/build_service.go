@@ -92,8 +92,23 @@ func (s *BuildService) Run(ctx context.Context, buildID, projectID string) error
 		return s.failBuild(&build, buildID, fmt.Errorf("项目没有源文件"))
 	}
 
+	// Arduino 项目：若主 .ino 位于根目录，写入同名子目录以符合 Arduino CLI 规范
+	arduinoSubdir := ""
+	if build.Framework != "espidf" {
+		for _, f := range files {
+			if strings.HasSuffix(f.Path, ".ino") && !strings.Contains(f.Path, "/") && !strings.Contains(f.Path, "\\") {
+				arduinoSubdir = strings.TrimSuffix(f.Path, ".ino")
+				break
+			}
+		}
+	}
+
 	for _, f := range files {
-		fullPath := filepath.Join(srcDir, filepath.FromSlash(f.Path))
+		targetRel := f.Path
+		if arduinoSubdir != "" && !strings.HasPrefix(targetRel, arduinoSubdir+"/") {
+			targetRel = filepath.Join(arduinoSubdir, targetRel)
+		}
+		fullPath := filepath.Join(srcDir, filepath.FromSlash(targetRel))
 		if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 			return s.failBuild(&build, buildID, err)
 		}
@@ -260,6 +275,27 @@ func detectProjectSubdir(srcDir, framework string) string {
 			return nil
 		})
 		return found
+	}
+
+	if framework != "espidf" {
+		var found string
+		_ = filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil || found != "" {
+				return nil
+			}
+			if !info.IsDir() && strings.HasSuffix(info.Name(), ".ino") {
+				dir := filepath.Dir(path)
+				rel, relErr := filepath.Rel(srcDir, dir)
+				if relErr == nil && rel != "." && !strings.HasPrefix(rel, ".") {
+					found = rel
+					return filepath.SkipAll
+				}
+			}
+			return nil
+		})
+		if found != "" {
+			return found
+		}
 	}
 
 	return ""

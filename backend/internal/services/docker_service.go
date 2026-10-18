@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -57,6 +58,7 @@ func (d *DockerService) RunBuild(ctx context.Context, opts BuildOptions) error {
 		Image: opts.Image,
 		Cmd:   opts.Cmd,
 		Env:   opts.Env,
+		Tty:   true,
 	}
 
 	hostConfig := &container.HostConfig{
@@ -120,6 +122,9 @@ func (d *DockerService) RunBuild(ctx context.Context, opts BuildOptions) error {
 		scanner := bufio.NewScanner(logReader)
 		for scanner.Scan() {
 			line := scanner.Text()
+			// 过滤掉二进制 NUL 字符与回车符，防止 PostgreSQL UTF-8 编码报错
+			line = strings.ReplaceAll(line, "\x00", "")
+			line = strings.TrimRight(line, "\r")
 			if opts.LogCallback != nil {
 				opts.LogCallback(line)
 			}
