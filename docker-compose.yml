@@ -85,6 +85,21 @@ services:
       - frontend
       - backend
 
+  # ---- 编译容器构建声明（供一次性或自动构建使用，不会随 compose up 常驻启动）----
+  arduino-builder:
+    profiles: ["builders"]
+    build:
+      context: ./docker/arduino-builder
+      dockerfile: Dockerfile
+    image: esp32-ide/arduino-builder:latest
+
+  idf-builder:
+    profiles: ["builders"]
+    build:
+      context: ./docker/idf-builder
+      dockerfile: Dockerfile
+    image: esp32-ide/idf-builder:latest
+
 volumes:
   pg_data:
   redis_data:

@@ -5,6 +5,8 @@ import axios from 'axios'
 export interface DeviceInfo {
   chip: string
   flashSize: string
+  flashSizeBytes?: number
+  mac?: string
   port: SerialPort
   transport: Transport
   esploader: ESPLoader
@@ -55,17 +57,28 @@ export function useWebSerial() {
 
       const chip = await esploader.main()
       let flashSizeStr = '未知'
+      let flashSizeBytes: number | undefined
       try {
         const flashBytes = await esploader.getFlashSize()
         if (flashBytes) {
+          flashSizeBytes = flashBytes
           flashSizeStr = `${Math.round(flashBytes / (1024 * 1024))}MB`
         }
       } catch {}
 
-      onLog?.(`连接成功: ${chip} (Flash 大小: ${flashSizeStr})`)
+      let macStr: string | undefined
+      try {
+        if (esploader.chip && typeof (esploader.chip as any).readMac === 'function') {
+          macStr = await (esploader.chip as any).readMac(esploader)
+        }
+      } catch {}
+
+      onLog?.(`连接成功: ${chip} (Flash 大小: ${flashSizeStr}${macStr ? `, MAC: ${macStr}` : ''})`)
       setDevice({
         chip,
         flashSize: flashSizeStr,
+        flashSizeBytes,
+        mac: macStr,
         port,
         transport,
         esploader,
@@ -175,9 +188,32 @@ export function useWebSerial() {
           terminal,
         })
         onLog?.('正在向 ESP32 发送同步握手信号...')
-        setFlashStage('正在同步握手并进入 Bootloader 模式...')
         const chip = await activeLoader.main()
-        onLog?.(`已成功握手，识别芯片型号: ${chip}`)
+        let flashSizeStr = '未知'
+        let flashSizeBytes: number | undefined
+        try {
+          const bytes = await activeLoader.getFlashSize()
+          if (bytes) {
+            flashSizeBytes = bytes
+            flashSizeStr = `${Math.round(bytes / (1024 * 1024))}MB`
+          }
+        } catch {}
+        let macStr: string | undefined
+        try {
+          if (activeLoader.chip && typeof (activeLoader.chip as any).readMac === 'function') {
+            macStr = await (activeLoader.chip as any).readMac(activeLoader)
+          }
+        } catch {}
+        onLog?.(`已成功握手，识别芯片型号: ${chip} (Flash: ${flashSizeStr}${macStr ? `, MAC: ${macStr}` : ''})`)
+        setDevice({
+          chip,
+          flashSize: flashSizeStr,
+          flashSizeBytes,
+          mac: macStr,
+          port,
+          transport: activeTransport,
+          esploader: activeLoader,
+        })
       }
 
       onLog?.('开始擦除并写入固件至 ESP32 Flash (偏移地址 0x0)...')

@@ -37,6 +37,21 @@ fi
 echo "启动 Docker 容器集群..."
 docker compose up -d --build
 
+echo "检查并确保编译容器镜像就绪..."
+if [[ "$(docker images -q esp32-ide/arduino-builder:latest 2> /dev/null)" == "" ]]; then
+    echo "未检测到 Arduino 编译镜像，正在自动构建 (docker compose --profile builders build arduino-builder)..."
+    docker compose --profile builders build arduino-builder
+else
+    echo "✓ Arduino 编译镜像已就绪 (esp32-ide/arduino-builder:latest)"
+fi
+
+if [[ "$(docker images -q esp32-ide/idf-builder:latest 2> /dev/null)" == "" ]]; then
+    echo "未检测到 ESP-IDF 编译镜像，正在自动构建 (docker compose --profile builders build idf-builder)..."
+    docker compose --profile builders build idf-builder
+else
+    echo "✓ ESP-IDF 编译镜像已就绪 (esp32-ide/idf-builder:latest)"
+fi
+
 echo "容器运行状态:"
 docker compose ps
 EOF

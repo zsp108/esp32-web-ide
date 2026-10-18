@@ -2,12 +2,19 @@
 frontend/node_modules/
 backend/.gomodcache/
 
+# Binaries & build artifacts
+backend/server-linux-amd64
+*.bin
+*.exe
+
 # OS files
 .DS_Store
 Thumbs.db
+._*
 
 # Logs
 *.log
 
 # Environment variables
+.env
 .env.local

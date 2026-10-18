@@ -167,7 +167,11 @@ fi
 
 SRC_DIR="${PROJECT_DIR:-/src}"
 cd "$SRC_DIR"
-echo "[Custom Command] 工作目录: $PWD"
+if [ "$SRC_DIR" = "/src" ]; then
+    echo "[Custom Command] 当前执行路径: 项目根目录 ($PWD)"
+else
+    echo "[Custom Command] 当前执行路径: 项目主工程目录 ($PWD，可通过 cd /src 返回根目录)"
+fi
 echo "[Custom Command] 执行自定义编译命令:"
 echo "--------------------------------------------------"
 echo "$ %s"

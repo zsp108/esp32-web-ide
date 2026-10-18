@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import Editor from '@monaco-editor/react'
@@ -7,7 +7,8 @@ import {
   Loader2, CheckCircle2, XCircle, AlertTriangle, FileCode, ArrowLeft, Square, Zap,
   FilePlus, Trash2, Settings, FileText, Code2, Pencil,
   Folder, FolderOpen, ChevronRight, ChevronDown, Database, Image, Search,
-  FolderPlus, ChevronsUpDown, ChevronsDownUp, X
+  FolderPlus, ChevronsUpDown, ChevronsDownUp, X, ArrowDown, Copy, Check,
+  ShieldCheck, ShieldAlert, ShieldX, RefreshCw
 } from 'lucide-react'
 import { projectsApi, filesApi, buildsApi, boardsApi } from '../api/client'
 import { useWebSerial } from '../hooks/useWebSerial'
@@ -19,7 +20,42 @@ interface LogEntry {
   text: string
 }
 
-type RightPanel = 'device' | 'build' | 'logs' | 'flash'
+type RightPanel = 'device' | 'build' | 'buildLogs' | 'flash' | 'flashLogs'
+
+export interface CompatibilityReport {
+  hasDevice: boolean
+  isMatched: boolean
+  hasWarning: boolean
+  chipStatus: 'match' | 'mismatch' | 'unknown'
+  expectedChip: string
+  detectedChip: string
+  flashStatus: 'ok' | 'warning' | 'insufficient' | 'unknown'
+  expectedFlashSize: string
+  detectedFlashSize: string
+  binStatus: 'ok' | 'overflow' | 'unknown'
+  binSizeKb?: number
+  flashSizeKb?: number
+  ratioPercent?: number
+  suggestedBoard?: { id: string; fqbn: string; name: string }
+  summary: string
+  reasons: string[]
+}
+
+function normalizeChipName(name: string): string {
+  return name.replace(/[-_\s]/g, '').toLowerCase()
+}
+
+function parseSizeToBytes(sizeStr?: string): number {
+  if (!sizeStr) return 0
+  const match = sizeStr.match(/(\d+(?:\.\d+)?)\s*(MB|M|KB|K|B|GB)/i)
+  if (!match) return 0
+  const val = parseFloat(match[1])
+  const unit = match[2].toUpperCase()
+  if (unit.startsWith('G')) return val * 1024 * 1024 * 1024
+  if (unit.startsWith('M')) return val * 1024 * 1024
+  if (unit.startsWith('K')) return val * 1024
+  return val
+}
 
 interface FileTreeNode {
   name: string
@@ -135,9 +171,9 @@ export default function EditorPage() {
   const [buildStatus, setBuildStatus] = useState<'idle' | 'building' | 'success' | 'failed' | 'cancelled'>('idle')
   const [buildProgress, setBuildProgress] = useState(0)
   const [buildStage, setBuildStage] = useState<string>('')
-  const [logs, setLogs] = useState<LogEntry[]>([])
+  const [buildLogs, setBuildLogs] = useState<LogEntry[]>([])
+  const [flashLogs, setFlashLogs] = useState<LogEntry[]>([])
   const [binUrl, setBinUrl] = useState<string | null>(null)
-  const logsEndRef = useRef<HTMLDivElement>(null)
 
   const {
     device,
@@ -261,6 +297,138 @@ export default function EditorPage() {
   const latestBuild = projectBuilds?.[0]
   const currentBoard = selectedBoard || latestBuild?.board_fqbn || project?.board_fqbn || 'esp32:esp32:esp32'
 
+  // 设备与项目匹配度检测评估
+  const compatibility: CompatibilityReport = useMemo(() => {
+    if (!device) {
+      return {
+        hasDevice: false,
+        isMatched: true,
+        hasWarning: false,
+        chipStatus: 'unknown',
+        expectedChip: '',
+        detectedChip: '',
+        flashStatus: 'unknown',
+        expectedFlashSize: '',
+        detectedFlashSize: '',
+        binStatus: 'unknown',
+        summary: '等待连接硬件设备',
+        reasons: [],
+      }
+    }
+
+    const currentBoardObj = boards.find((b: any) => (b.fqbn || b.id) === currentBoard)
+    let expectedChip = currentBoardObj?.chip || ''
+    if (!expectedChip) {
+      const lower = currentBoard.toLowerCase()
+      if (lower.includes('esp32s3')) expectedChip = 'ESP32-S3'
+      else if (lower.includes('esp32c3')) expectedChip = 'ESP32-C3'
+      else if (lower.includes('esp32c2')) expectedChip = 'ESP32-C2'
+      else if (lower.includes('esp32c6')) expectedChip = 'ESP32-C6'
+      else if (lower.includes('esp32s2')) expectedChip = 'ESP32-S2'
+      else if (lower.includes('esp8266')) expectedChip = 'ESP8266'
+      else expectedChip = 'ESP32'
+    }
+
+    let expectedFlashSize = currentBoardObj?.flash_size || ''
+    if (!expectedFlashSize) {
+      const match = currentBoard.match(/FlashSize=(\d+M)/i)
+      if (match) expectedFlashSize = match[1].toUpperCase() + 'B'
+      else expectedFlashSize = '4MB'
+    }
+
+    const detectedChip = device.chip || '未知'
+    const detectedFlashSize = device.flashSize || '未知'
+
+    const normExpected = normalizeChipName(expectedChip)
+    const normDetected = normalizeChipName(detectedChip)
+    const chipMatch = normExpected === normDetected
+
+    const chipStatus: 'match' | 'mismatch' = chipMatch ? 'match' : 'mismatch'
+
+    const expectedBytes = parseSizeToBytes(expectedFlashSize)
+    const detectedBytes = device.flashSizeBytes || parseSizeToBytes(detectedFlashSize)
+
+    let flashStatus: 'ok' | 'warning' | 'insufficient' | 'unknown' = 'unknown'
+    if (detectedBytes > 0 && expectedBytes > 0) {
+      if (detectedBytes < expectedBytes) {
+        flashStatus = 'insufficient'
+      } else {
+        flashStatus = 'ok'
+      }
+    }
+
+    let binStatus: 'ok' | 'overflow' | 'unknown' = 'unknown'
+    let binSizeKb: number | undefined
+    let flashSizeKb: number | undefined
+    let ratioPercent: number | undefined
+
+    if (latestBuild?.bin_size_bytes && detectedBytes > 0) {
+      binSizeKb = Math.round(latestBuild.bin_size_bytes / 1024)
+      flashSizeKb = Math.round(detectedBytes / 1024)
+      ratioPercent = Math.min(100, Math.round((latestBuild.bin_size_bytes / detectedBytes) * 100))
+      if (latestBuild.bin_size_bytes > detectedBytes) {
+        binStatus = 'overflow'
+      } else {
+        binStatus = 'ok'
+      }
+    }
+
+    let suggestedBoard: { id: string; fqbn: string; name: string } | undefined
+    if (!chipMatch) {
+      suggestedBoard = boards.find((b: any) => {
+        const bNorm = normalizeChipName(b.chip || '')
+        if (bNorm !== normDetected) return false
+        if (detectedBytes > 0) {
+          const bBytes = parseSizeToBytes(b.flash_size)
+          return bBytes <= detectedBytes
+        }
+        return true
+      })
+    }
+
+    const reasons: string[] = []
+    if (!chipMatch) {
+      reasons.push(`芯片架构不匹配：项目配置为 ${expectedChip}，实际检测到 ${detectedChip}`)
+    }
+    if (flashStatus === 'insufficient') {
+      reasons.push(`Flash 容量可能不足：项目推荐 ${expectedFlashSize}，实际设备仅检测到 ${detectedFlashSize}`)
+    }
+    if (binStatus === 'overflow') {
+      reasons.push(`固件产物超出物理 Flash 容量！`)
+    }
+
+    const isMatched = chipMatch && binStatus !== 'overflow'
+    const hasWarning = !isMatched || flashStatus === 'insufficient'
+
+    let summary = '硬件与项目配置完全匹配'
+    if (!chipMatch) {
+      summary = `芯片型号不匹配 (${detectedChip} vs ${expectedChip})`
+    } else if (binStatus === 'overflow') {
+      summary = '固件大小超出 Flash 限制'
+    } else if (flashStatus === 'insufficient') {
+      summary = `Flash 容量低于推荐 (${detectedFlashSize} < ${expectedFlashSize})`
+    }
+
+    return {
+      hasDevice: true,
+      isMatched,
+      hasWarning,
+      chipStatus,
+      expectedChip,
+      detectedChip,
+      flashStatus,
+      expectedFlashSize,
+      detectedFlashSize,
+      binStatus,
+      binSizeKb,
+      flashSizeKb,
+      ratioPercent,
+      suggestedBoard,
+      summary,
+      reasons,
+    }
+  }, [device, currentBoard, boards, latestBuild])
+
   // 从编译历史恢复状态和日志
   useEffect(() => {
     if (!projectBuilds || projectBuilds.length === 0) return
@@ -285,9 +453,9 @@ export default function EditorPage() {
         setBuildProgress(100)
         setBuildStage('编译成功')
         setBinUrl(buildsApi.downloadUrl(latest.id))
-        if (logs.length === 0 && latest.build_log) {
+        if (buildLogs.length === 0 && latest.build_log) {
           const lines = latest.build_log.split('\n').filter(Boolean)
-          setLogs(lines.map((line: string) => {
+          setBuildLogs(lines.map((line: string) => {
             let level: 'info' | 'error' | 'warning' = 'info'
             const lower = line.toLowerCase()
             if (line.includes('[ERROR]') || lower.includes('error:')) level = 'error'
@@ -299,16 +467,17 @@ export default function EditorPage() {
         setBuildStatus('cancelled')
         setBuildProgress(0)
         setBuildStage(latest.error_msg || '编译任务已中止')
-        if (logs.length === 0 && latest.build_log) {
+        if (buildLogs.length === 0 && latest.build_log) {
           const lines = latest.build_log.split('\n').filter(Boolean)
-          setLogs(lines.map((line: string) => ({ level: 'warning', text: line })))
+          setBuildLogs(lines.map((line: string) => ({ level: 'warning', text: line })))
         }
       } else if (latest.status === 'failed' || latest.status === 'timeout') {
         setBuildStatus('failed')
+        setBuildProgress(0)
         setBuildStage(latest.error_msg || '编译失败')
-        if (logs.length === 0 && latest.build_log) {
+        if (buildLogs.length === 0 && latest.build_log) {
           const lines = latest.build_log.split('\n').filter(Boolean)
-          setLogs(lines.map((line: string) => {
+          setBuildLogs(lines.map((line: string) => {
             let level: 'info' | 'error' | 'warning' = 'info'
             const lower = line.toLowerCase()
             if (line.includes('[ERROR]') || lower.includes('error:')) level = 'error'
@@ -318,16 +487,19 @@ export default function EditorPage() {
         }
       }
     }
-  }, [projectBuilds, buildId, selectedBoard, logs.length])
+  }, [projectBuilds, buildId, selectedBoard, buildLogs.length])
 
-  const appendLog = useCallback((entry: LogEntry) => {
-    setLogs(prev => [...prev, entry])
-    setTimeout(() => logsEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50)
+  const appendBuildLog = useCallback((entry: LogEntry) => {
+    setBuildLogs(prev => [...prev, entry])
+  }, [])
+
+  const appendFlashLog = useCallback((entry: LogEntry) => {
+    setFlashLogs(prev => [...prev, entry])
   }, [])
 
   const onWsMessage = useCallback((msg: WSMessage) => {
     if (msg.type === 'log' && msg.text) {
-      appendLog({ level: msg.level ?? 'info', text: msg.text })
+      appendBuildLog({ level: msg.level ?? 'info', text: msg.text })
     } else if (msg.type === 'progress') {
       if (typeof msg.percent === 'number') setBuildProgress(msg.percent)
       if (msg.stage) setBuildStage(msg.stage)
@@ -336,17 +508,17 @@ export default function EditorPage() {
         setBuildStatus('cancelled')
         setBuildProgress(0)
         setBuildStage('编译任务已中止')
-        if (msg.error) appendLog({ level: 'warning', text: `[WARN] ${msg.error}` })
+        if (msg.error) appendBuildLog({ level: 'warning', text: `[WARN] ${msg.error}` })
       } else {
         setBuildStatus(msg.status === 'success' ? 'success' : 'failed')
         setBuildProgress(msg.status === 'success' ? 100 : 0)
         if (msg.stage) setBuildStage(msg.stage)
         if (msg.bin_url) setBinUrl(msg.bin_url)
-        if (msg.error) appendLog({ level: 'error', text: msg.error })
+        if (msg.error) appendBuildLog({ level: 'error', text: msg.error })
       }
       refetchBuilds()
     }
-  }, [appendLog, refetchBuilds])
+  }, [appendBuildLog, refetchBuilds])
 
   useWebSocket(buildId, onWsMessage)
 
@@ -366,10 +538,10 @@ export default function EditorPage() {
       setBuildStatus('building')
       setBuildProgress(10)
       setBuildStage(buildMode === 'custom' ? '正在提交自定义命令编译任务...' : '正在提交编译任务至后台...')
-      setLogs([])
+      setBuildLogs([])
       setBinUrl(null)
       setRightPanel('build')
-      appendLog({
+      appendBuildLog({
         level: 'info',
         text: buildMode === 'custom'
           ? `[INFO] 正在提交自定义命令编译任务: ${customCommand.trim()}`
@@ -378,13 +550,13 @@ export default function EditorPage() {
     },
     onSuccess: (data: { id: string }) => {
       setBuildId(data.id)
-      appendLog({ level: 'info', text: `编译任务已在后台启动: ${data.id}` })
+      appendBuildLog({ level: 'info', text: `编译任务已在后台启动: ${data.id}` })
       refetchBuilds()
     },
     onError: (err: any) => {
       setBuildStatus('failed')
       setBuildStage('提交任务失败')
-      appendLog({ level: 'error', text: `无法提交编译任务: ${err.response?.data?.error || err.message}` })
+      appendBuildLog({ level: 'error', text: `无法提交编译任务: ${err.response?.data?.error || err.message}` })
     },
   })
 
@@ -406,7 +578,7 @@ export default function EditorPage() {
       setBuildStatus('cancelled')
       setBuildProgress(0)
       setBuildStage('编译任务已中止')
-      appendLog({ level: 'warning', text: '[WARN] 用户已手动中止当前编译任务' })
+      appendBuildLog({ level: 'warning', text: '[WARN] 用户已手动中止当前编译任务' })
       refetchBuilds()
     } catch (err: any) {
       console.error('中止任务失败:', err)
@@ -418,9 +590,31 @@ export default function EditorPage() {
       alert('请先编译项目生成固件后再执行刷写！')
       return
     }
-    setRightPanel('flash')
+
+    // 硬件兼容性安全门禁：当芯片架构完全不同时进行弹窗强预警
+    if (device && compatibility && !compatibility.isMatched) {
+      const confirmed = window.confirm(
+        `⚠️ 硬件芯片架构不匹配警告！\n\n` +
+        `• 项目目标芯片: ${compatibility.expectedChip}\n` +
+        `• 实际连接硬件: ${compatibility.detectedChip}\n\n` +
+        `两款芯片 CPU 指令集架构不同，强行刷入将导致芯片崩溃或无法启动！\n\n` +
+        `是否确定仍要强行刷写？`
+      )
+      if (!confirmed) {
+        setRightPanel('device')
+        return
+      }
+    }
+
+    setRightPanel('flashLogs')
     try {
-      appendLog({ level: 'info', text: '==================== 开始固件刷写 ====================' })
+      appendFlashLog({ level: 'info', text: '==================== 开始固件刷写 ====================' })
+      if (device && compatibility) {
+        appendFlashLog({
+          level: compatibility.isMatched ? 'info' : 'warning',
+          text: `[硬件预检] 编译目标: ${compatibility.expectedChip} ⟷ 连接设备: ${compatibility.detectedChip} (${compatibility.summary})`,
+        })
+      }
       await flashFirmware(
         binUrl,
         undefined,
@@ -428,7 +622,7 @@ export default function EditorPage() {
           let level: 'info' | 'warning' | 'error' = 'info'
           if (msg.includes('[ERROR]') || msg.toLowerCase().includes('error:')) level = 'error'
           else if (msg.includes('[WARN') || msg.toLowerCase().includes('warning:')) level = 'warning'
-          appendLog({ level, text: msg })
+          appendFlashLog({ level, text: msg })
         }
       )
     } catch (err: any) {
@@ -585,7 +779,17 @@ export default function EditorPage() {
   }
 
   const panelTabs: { id: RightPanel; label: string; badge?: React.ReactNode }[] = [
-    { id: 'device', label: '设备' },
+    {
+      id: 'device',
+      label: '设备',
+      badge: device ? (
+        compatibility.isMatched ? (
+          <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" title="硬件匹配" />
+        ) : (
+          <span className="w-2 h-2 rounded-full bg-red-400 shrink-0 animate-pulse" title="硬件不匹配" />
+        )
+      ) : null,
+    },
     {
       id: 'build',
       label: '编译',
@@ -603,11 +807,11 @@ export default function EditorPage() {
       ) : null,
     },
     {
-      id: 'logs',
-      label: '日志',
-      badge: logs.length > 0 ? (
-        <span className="text-[10px] bg-dark-600 text-gray-400 px-1.5 rounded-full font-mono">
-          {logs.length}
+      id: 'buildLogs',
+      label: '编译日志',
+      badge: buildLogs.length > 0 ? (
+        <span className="text-[10px] bg-blue-950/80 text-blue-300 border border-blue-800/40 px-1.5 rounded-full font-mono">
+          {buildLogs.length}
         </span>
       ) : null,
     },
@@ -621,6 +825,15 @@ export default function EditorPage() {
         </span>
       ) : flashSuccess ? (
         <span className="w-2 h-2 rounded-full bg-green-400" />
+      ) : null,
+    },
+    {
+      id: 'flashLogs',
+      label: '刷写日志',
+      badge: flashLogs.length > 0 ? (
+        <span className="text-[10px] bg-purple-950/80 text-purple-300 border border-purple-800/40 px-1.5 rounded-full font-mono">
+          {flashLogs.length}
+        </span>
       ) : null,
     },
   ]
@@ -800,9 +1013,24 @@ export default function EditorPage() {
 
         {/* Device status */}
         {device ? (
-          <div className="flex items-center gap-2 text-green-400 text-xs">
-            <Wifi size={14} />
-            <span>{device.chip} · {device.flashSize}</span>
+          <div className="flex items-center gap-2 text-xs">
+            <button
+              onClick={() => setRightPanel('device')}
+              className="flex items-center gap-1.5 hover:opacity-85 transition-opacity"
+              title="点击查看设备详情与硬件匹配预检"
+            >
+              <Wifi size={14} className={compatibility.isMatched ? 'text-green-400' : 'text-amber-400'} />
+              <span className="text-gray-200 font-mono">{device.chip} · {device.flashSize}</span>
+              {compatibility.isMatched ? (
+                <span className="text-[10px] bg-green-950/80 text-green-300 border border-green-700/60 px-1.5 py-0.5 rounded font-sans">
+                  匹配 ✓
+                </span>
+              ) : (
+                <span className="text-[10px] bg-red-950/80 text-red-300 border border-red-700/60 px-1.5 py-0.5 rounded font-sans animate-pulse">
+                  芯片不符 ✕
+                </span>
+              )}
+            </button>
             <button onClick={disconnect} className="text-gray-500 hover:text-red-400 ml-1">断开</button>
           </div>
         ) : (
@@ -992,27 +1220,32 @@ export default function EditorPage() {
         </main>
 
         {/* Right panel */}
-        <aside className="w-72 shrink-0 border-l border-dark-600 bg-dark-800 flex flex-col overflow-hidden">
+        <aside className="w-80 shrink-0 border-l border-dark-600 bg-dark-800 flex flex-col overflow-hidden">
           {/* Panel tabs */}
-          <div className="flex border-b border-dark-600 shrink-0">
+          <div className="flex border-b border-dark-600 shrink-0 overflow-x-auto">
             {panelTabs.map(tab => (
               <button
                 key={tab.id}
                 onClick={() => setRightPanel(tab.id)}
                 className={clsx(
-                  'flex-1 text-xs py-2 font-medium transition-colors flex items-center justify-center gap-1.5',
+                  'flex-1 text-[11px] py-2 px-1 font-medium transition-colors flex items-center justify-center gap-1 min-w-0 shrink-0',
                   rightPanel === tab.id
                     ? 'text-blue-400 border-b-2 border-blue-400'
                     : 'text-gray-500 hover:text-gray-300'
                 )}
               >
-                <span>{tab.label}</span>
+                <span className="truncate">{tab.label}</span>
                 {tab.badge}
               </button>
             ))}
           </div>
 
-          <div className="flex-1 overflow-y-auto p-3">
+          <div className={clsx(
+            'flex-1 min-h-0',
+            (rightPanel === 'buildLogs' || rightPanel === 'flashLogs')
+              ? 'p-2.5 flex flex-col overflow-hidden'
+              : 'p-3 overflow-y-auto'
+          )}>
             {rightPanel === 'device' && (
               <DevicePanel
                 device={device}
@@ -1021,6 +1254,8 @@ export default function EditorPage() {
                 isSupported={isSupported}
                 onConnect={connect}
                 onDisconnect={disconnect}
+                compatibility={compatibility}
+                onSelectBoard={setSelectedBoard}
               />
             )}
 
@@ -1036,7 +1271,7 @@ export default function EditorPage() {
                 boards={boards}
                 currentBoard={currentBoard}
                 onSelectBoard={setSelectedBoard}
-                onViewLogs={() => setRightPanel('logs')}
+                onViewLogs={() => setRightPanel('buildLogs')}
                 framework={project?.framework}
                 latestBuild={latestBuild}
                 flashing={flashing}
@@ -1052,8 +1287,14 @@ export default function EditorPage() {
               />
             )}
 
-            {rightPanel === 'logs' && (
-              <LogsPanel logs={logs} logsEndRef={logsEndRef} />
+            {rightPanel === 'buildLogs' && (
+              <LogsViewer
+                title="编译输出日志"
+                logs={buildLogs}
+                onClear={() => setBuildLogs([])}
+                emptyText="等待编译任务启动，后台日志将实时流式展示..."
+                accentColor="blue"
+              />
             )}
 
             {rightPanel === 'flash' && (
@@ -1067,10 +1308,21 @@ export default function EditorPage() {
                 error={serialError}
                 latestBuild={latestBuild}
                 onFlash={handleFlash}
-                onConnect={() => connect((msg) => appendLog({ level: 'info', text: msg }))}
+                onConnect={() => connect((msg) => appendFlashLog({ level: 'info', text: msg }))}
                 onDisconnect={disconnect}
                 isSupported={isSupported}
-                onViewLogs={() => setRightPanel('logs')}
+                onViewLogs={() => setRightPanel('flashLogs')}
+                compatibility={compatibility}
+              />
+            )}
+
+            {rightPanel === 'flashLogs' && (
+              <LogsViewer
+                title="串口刷写日志"
+                logs={flashLogs}
+                onClear={() => setFlashLogs([])}
+                emptyText="尚未执行固件刷写。点击「开始刷写」后，Web Serial 串口通信与烧录细节将实时显示在这里..."
+                accentColor="purple"
               />
             )}
           </div>
@@ -1194,54 +1446,226 @@ export default function EditorPage() {
 
 /* ── Sub-components ── */
 
-function DevicePanel({ device, connecting, error, isSupported, onConnect, onDisconnect }: {
+function DevicePanel({
+  device,
+  connecting,
+  error,
+  isSupported,
+  onConnect,
+  onDisconnect,
+  compatibility,
+  onSelectBoard,
+}: {
   device: ReturnType<typeof useWebSerial>['device']
   connecting: boolean
   error: string | null
   isSupported: boolean
   onConnect: () => void
   onDisconnect: () => void
+  compatibility?: CompatibilityReport
+  onSelectBoard?: (boardFqbn: string) => void
 }) {
   return (
     <div className="space-y-4">
-      <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">设备连接</h3>
-      {device ? (
-        <div className="bg-dark-700 rounded-lg p-3 space-y-2">
-          <div className="flex items-center gap-2 text-green-400">
-            <CheckCircle2 size={14} />
-            <span className="text-sm font-medium">已连接</span>
-          </div>
-          <div className="text-xs text-gray-400 space-y-1">
-            <div>芯片: <span className="text-gray-200">{device.chip}</span></div>
-            <div>Flash: <span className="text-gray-200">{device.flashSize}</span></div>
-          </div>
-          <button
-            onClick={onDisconnect}
-            className="w-full mt-2 text-xs text-red-400 border border-red-800 rounded px-3 py-1.5 hover:bg-red-900/20 transition-colors"
-          >
-            断开连接
-          </button>
+      {/* 1. 硬件连接卡片 */}
+      <div className="bg-dark-800 rounded-lg p-3 border border-dark-600 space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-xs font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
+            <Cpu size={14} className="text-blue-400" />
+            硬件串口设备
+          </h3>
+          {device ? (
+            <span className="text-[11px] bg-green-950/80 text-green-300 border border-green-700/60 px-2 py-0.5 rounded-full font-medium flex items-center gap-1">
+              <CheckCircle2 size={11} />
+              已连接
+            </span>
+          ) : (
+            <span className="text-[11px] text-gray-400">未连接</span>
+          )}
         </div>
-      ) : (
-        <div className="space-y-3">
-          <p className="text-xs text-gray-500">
-            {isSupported
-              ? '点击下方按钮通过 Web Serial API 连接 ESP32'
-              : '浏览器不支持 Web Serial API，请使用 Chrome 或 Edge'}
-          </p>
-          <button
-            onClick={onConnect}
-            disabled={connecting || !isSupported}
-            className="w-full flex items-center justify-center gap-2 bg-blue-700 hover:bg-blue-600 disabled:opacity-50 text-white text-sm py-2 rounded-md transition-colors"
-          >
-            {connecting ? <Loader2 size={14} className="animate-spin" /> : <Wifi size={14} />}
-            {connecting ? '连接中...' : '连接设备'}
-          </button>
-          {error && (
-            <div className="flex items-start gap-2 text-red-400 text-xs bg-red-900/20 rounded p-2">
-              <AlertTriangle size={12} className="mt-0.5 shrink-0" />
-              <span>{error}</span>
+
+        {device ? (
+          <div className="space-y-2.5 text-xs">
+            <div className="bg-dark-900/80 rounded p-2.5 space-y-1.5 border border-dark-700/60 font-mono text-[11px]">
+              <div className="flex justify-between">
+                <span className="text-gray-400 font-sans">芯片架构:</span>
+                <span className="text-green-300 font-bold">{device.chip}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-400 font-sans">Flash 物理大小:</span>
+                <span className="text-blue-300">{device.flashSize}</span>
+              </div>
+              {device.mac && (
+                <div className="flex justify-between">
+                  <span className="text-gray-400 font-sans">MAC 地址:</span>
+                  <span className="text-gray-300">{device.mac}</span>
+                </div>
+              )}
             </div>
+
+            <button
+              onClick={onDisconnect}
+              className="w-full text-xs text-red-400 border border-red-800/80 hover:bg-red-900/20 rounded py-1.5 transition-colors"
+            >
+              断开连接
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-xs text-gray-400 leading-relaxed">
+              {isSupported
+                ? '通过浏览器原生 Web Serial API 连接 ESP32，系统将自动读取芯片型号并进行兼容性匹配。'
+                : '当前浏览器不支持 Web Serial API，请使用 Chrome 或 Edge 浏览器。'}
+            </p>
+            <button
+              onClick={onConnect}
+              disabled={connecting || !isSupported}
+              className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs py-2 rounded-md transition-colors font-medium shadow-sm"
+            >
+              {connecting ? <Loader2 size={13} className="animate-spin" /> : <Wifi size={13} />}
+              {connecting ? '正在握手连接...' : '连接 ESP32 设备'}
+            </button>
+            {error && (
+              <div className="flex items-start gap-2 text-red-400 text-xs bg-red-950/40 border border-red-800/50 rounded p-2.5">
+                <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+                <span>{error}</span>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* 2. 项目与设备匹配预检卡片 (已连接时呈现) */}
+      {device && compatibility && (
+        <div className={clsx(
+          'rounded-lg p-3 border space-y-3 transition-colors',
+          !compatibility.isMatched
+            ? 'bg-red-950/30 border-red-500/50'
+            : compatibility.hasWarning
+            ? 'bg-amber-950/30 border-amber-500/50'
+            : 'bg-green-950/20 border-green-500/40'
+        )}>
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold uppercase tracking-wider flex items-center gap-1.5">
+              {!compatibility.isMatched ? (
+                <>
+                  <ShieldX size={15} className="text-red-400" />
+                  <span className="text-red-300">硬件不匹配</span>
+                </>
+              ) : compatibility.hasWarning ? (
+                <>
+                  <ShieldAlert size={15} className="text-amber-400" />
+                  <span className="text-amber-300">配置存差异</span>
+                </>
+              ) : (
+                <>
+                  <ShieldCheck size={15} className="text-green-400" />
+                  <span className="text-green-300">硬件完全匹配</span>
+                </>
+              )}
+            </span>
+
+            <span className={clsx(
+              'text-[10px] px-2 py-0.5 rounded-full font-medium',
+              !compatibility.isMatched
+                ? 'bg-red-950 text-red-300 border border-red-700/60'
+                : compatibility.hasWarning
+                ? 'bg-amber-950 text-amber-300 border border-amber-700/60'
+                : 'bg-green-950 text-green-300 border border-green-700/60'
+            )}>
+              {compatibility.summary}
+            </span>
+          </div>
+
+          <div className="space-y-2 text-xs">
+            {/* 芯片型号比对 */}
+            <div className="flex items-center justify-between bg-dark-900/60 p-2 rounded border border-dark-700/40">
+              <div className="space-y-0.5">
+                <div className="text-[11px] text-gray-400">芯片架构</div>
+                <div className="font-mono text-gray-200">
+                  <span className="text-gray-400">目标: </span>{compatibility.expectedChip}
+                  <span className="text-gray-500 mx-1">⟷</span>
+                  <span className="text-gray-400">设备: </span>{compatibility.detectedChip}
+                </div>
+              </div>
+              {compatibility.chipStatus === 'match' ? (
+                <span className="text-[11px] text-green-400 flex items-center gap-1 font-medium">
+                  <CheckCircle2 size={12} /> 匹配
+                </span>
+              ) : (
+                <span className="text-[11px] text-red-400 flex items-center gap-1 font-medium">
+                  <XCircle size={12} /> 不匹配
+                </span>
+              )}
+            </div>
+
+            {/* Flash 容量比对 */}
+            <div className="flex items-center justify-between bg-dark-900/60 p-2 rounded border border-dark-700/40">
+              <div className="space-y-0.5">
+                <div className="text-[11px] text-gray-400">Flash 存储</div>
+                <div className="font-mono text-gray-200">
+                  <span className="text-gray-400">要求: </span>{compatibility.expectedFlashSize}
+                  <span className="text-gray-500 mx-1">⟷</span>
+                  <span className="text-gray-400">设备: </span>{compatibility.detectedFlashSize}
+                </div>
+              </div>
+              {compatibility.flashStatus === 'ok' ? (
+                <span className="text-[11px] text-green-400 flex items-center gap-1 font-medium">
+                  <CheckCircle2 size={12} /> 充足
+                </span>
+              ) : compatibility.flashStatus === 'insufficient' ? (
+                <span className="text-[11px] text-amber-400 flex items-center gap-1 font-medium">
+                  <AlertTriangle size={12} /> 容量不足
+                </span>
+              ) : (
+                <span className="text-[11px] text-gray-400">待测</span>
+              )}
+            </div>
+
+            {/* 固件占用比对 (如果已有编译产物) */}
+            {compatibility.binSizeKb && compatibility.flashSizeKb && (
+              <div className="flex items-center justify-between bg-dark-900/60 p-2 rounded border border-dark-700/40">
+                <div className="space-y-0.5">
+                  <div className="text-[11px] text-gray-400">固件产物占用</div>
+                  <div className="font-mono text-gray-200 text-[11px]">
+                    {compatibility.binSizeKb} KB / {compatibility.flashSizeKb} KB ({compatibility.ratioPercent}%)
+                  </div>
+                </div>
+                {compatibility.binStatus === 'ok' ? (
+                  <span className="text-[11px] text-green-400 flex items-center gap-1 font-medium">
+                    <CheckCircle2 size={12} /> 正常
+                  </span>
+                ) : (
+                  <span className="text-[11px] text-red-400 flex items-center gap-1 font-medium">
+                    <XCircle size={12} /> 溢出
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* 智能切换推荐 */}
+          {compatibility.suggestedBoard && onSelectBoard && (
+            <div className="bg-blue-950/40 border border-blue-600/50 rounded p-2.5 space-y-2">
+              <p className="text-[11px] text-blue-200 leading-relaxed">
+                💡 检测到您连接的是 <strong className="text-white">{compatibility.detectedChip}</strong> 开发板，推荐将项目目标板型切换为：
+                <span className="block font-medium text-blue-300 mt-0.5">{compatibility.suggestedBoard.name}</span>
+              </p>
+              <button
+                type="button"
+                onClick={() => onSelectBoard(compatibility.suggestedBoard!.fqbn || compatibility.suggestedBoard!.id)}
+                className="w-full text-xs bg-blue-600 hover:bg-blue-500 text-white font-medium py-1.5 rounded transition-colors shadow-sm flex items-center justify-center gap-1.5"
+              >
+                <RefreshCw size={12} />
+                <span>一键切换为此开发板</span>
+              </button>
+            </div>
+          )}
+
+          {!compatibility.isMatched && (
+            <p className="text-[11px] text-red-300 leading-relaxed bg-red-950/50 p-2 rounded border border-red-800/50">
+              ⚠️ 警告：当前项目是为 <strong>{compatibility.expectedChip}</strong> 编译的，由于 CPU 指令集不同，若直接刷入 <strong>{compatibility.detectedChip}</strong> 将导致设备崩溃无法运行！
+            </p>
           )}
         </div>
       )}
@@ -1556,7 +1980,9 @@ function BuildPanel({
                 <Terminal size={11} className="text-blue-400" />
                 自定义执行命令
               </label>
-              <span className="text-[10px] text-gray-500">容器内 /src 运行</span>
+              <span className="text-[10px] text-blue-400/90 bg-blue-950/40 px-1.5 py-0.5 rounded border border-blue-800/40">
+                在项目根目录下执行
+              </span>
             </div>
 
             <div className="relative">
@@ -1565,10 +1991,13 @@ function BuildPanel({
                 value={customCommand}
                 onChange={e => onChangeCustomCommand(e.target.value)}
                 disabled={status === 'building'}
-                placeholder={framework === 'espidf' ? '例如: idf.py build' : '例如: arduino-cli compile --fqbn ... .'}
+                placeholder={framework === 'espidf' ? '例如: idf.py build 或 cd platforms/esp32 && idf.py build' : '例如: arduino-cli compile --fqbn ... .'}
                 className="w-full bg-dark-950 border border-dark-500 rounded p-2 text-xs font-mono text-green-300 placeholder-gray-600 focus:outline-none focus:border-blue-500 disabled:opacity-50 resize-none leading-relaxed"
               />
             </div>
+            <p className="text-[10px] text-gray-400">
+              💡 命令默认从项目根目录启动（支持使用 <code className="text-blue-300">cd</code> 切换子目录），执行完后系统会自动打包固件。
+            </p>
 
             {/* 常用命令快捷填充 */}
             <div className="space-y-1">
@@ -1637,34 +2066,132 @@ function BuildPanel({
   )
 }
 
-function LogsPanel({ logs, logsEndRef }: {
+function LogsViewer({
+  title,
+  logs,
+  onClear,
+  emptyText,
+  accentColor = 'blue',
+}: {
+  title: string
   logs: LogEntry[]
-  logsEndRef: React.RefObject<HTMLDivElement>
+  onClear: () => void
+  emptyText: string
+  accentColor?: 'blue' | 'purple'
 }) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [autoScroll, setAutoScroll] = useState(true)
+  const [copied, setCopied] = useState(false)
+
+  // 关键：面板挂载、切换到日志面板以及有新日志推入时，瞬间对齐最新日志（最底部）
+  useLayoutEffect(() => {
+    if (autoScroll && containerRef.current) {
+      containerRef.current.scrollTop = containerRef.current.scrollHeight
+    }
+  }, [logs, autoScroll])
+
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget
+    // 用户向上翻看历史日志超过 30px 时，暂停自动滚底，避免打扰阅读
+    const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30
+    if (isAtBottom !== autoScroll) {
+      setAutoScroll(isAtBottom)
+    }
+  }
+
+  const scrollToBottom = () => {
+    if (containerRef.current) {
+      containerRef.current.scrollTop = containerRef.current.scrollHeight
+      setAutoScroll(true)
+    }
+  }
+
+  const handleCopy = () => {
+    if (logs.length === 0) return
+    const text = logs.map(l => l.text).join('\n')
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }
+
   return (
-    <div className="space-y-2">
-      <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-2">
-        <Terminal size={12} />
-        编译日志
-      </h3>
-      <div className="bg-dark-900 rounded-md p-2 font-mono text-xs space-y-0.5 max-h-[calc(100vh-200px)] overflow-y-auto">
+    <div className="h-full flex flex-col space-y-2 select-text">
+      <div className="flex items-center justify-between shrink-0">
+        <h3 className="text-xs font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-1.5 min-w-0 truncate">
+          <Terminal size={13} className={clsx('shrink-0', accentColor === 'purple' ? 'text-purple-400' : 'text-blue-400')} />
+          <span className="truncate">{title}</span>
+          <span className="text-[10px] text-gray-400 font-mono font-normal shrink-0">
+            ({logs.length})
+          </span>
+        </h3>
+
+        <div className="flex items-center gap-1 shrink-0">
+          <button
+            onClick={() => {
+              if (!autoScroll) scrollToBottom()
+              else setAutoScroll(false)
+            }}
+            className={clsx(
+              'px-1.5 py-0.5 text-[10px] rounded transition-colors flex items-center gap-0.5 border',
+              autoScroll
+                ? 'bg-blue-950/60 border-blue-700/60 text-blue-300'
+                : 'bg-dark-700/60 border-dark-600 text-gray-400 hover:text-gray-200'
+            )}
+            title={autoScroll ? '已开启实时滚动到最新（点击暂停）' : '点击立即跳到底部并恢复跟随'}
+          >
+            <ArrowDown size={10} className={clsx(autoScroll && 'animate-bounce')} />
+            <span>{autoScroll ? '最新' : '去底'}</span>
+          </button>
+
+          <button
+            onClick={handleCopy}
+            disabled={logs.length === 0}
+            className="p-1 text-gray-400 hover:text-gray-200 bg-dark-750 hover:bg-dark-700 border border-dark-600 rounded transition-colors disabled:opacity-30"
+            title="复制全部日志"
+          >
+            {copied ? <Check size={11} className="text-green-400" /> : <Copy size={11} />}
+          </button>
+
+          <button
+            onClick={onClear}
+            disabled={logs.length === 0}
+            className="p-1 text-gray-400 hover:text-red-400 bg-dark-750 hover:bg-dark-700 border border-dark-600 rounded transition-colors disabled:opacity-30"
+            title="清空当前日志"
+          >
+            <Trash2 size={11} />
+          </button>
+        </div>
+      </div>
+
+      <div
+        ref={containerRef}
+        onScroll={handleScroll}
+        className="flex-1 bg-dark-950/90 border border-dark-600/70 rounded-md p-2 font-mono text-xs overflow-y-auto space-y-0.5"
+      >
         {logs.length === 0 ? (
-          <span className="text-gray-600">等待编译...</span>
+          <div className="h-full flex flex-col items-center justify-center text-center p-4 text-gray-500 space-y-2">
+            <Terminal size={22} className="opacity-30" />
+            <p className="text-[11px] leading-relaxed max-w-[200px]">{emptyText}</p>
+          </div>
         ) : (
           logs.map((log, i) => (
             <div
               key={i}
               className={clsx(
-                log.level === 'error' && 'text-red-400',
-                log.level === 'warning' && 'text-yellow-400',
+                'leading-relaxed break-all whitespace-pre-wrap flex items-start gap-1.5',
+                log.level === 'error' && 'text-red-400 bg-red-950/25 px-1 py-0.5 rounded',
+                log.level === 'warning' && 'text-yellow-400 bg-yellow-950/15 px-1 py-0.5 rounded',
                 log.level === 'info' && 'text-gray-300',
               )}
             >
-              {log.text}
+              <span className="text-[10px] text-gray-600 select-none shrink-0 w-5 text-right font-mono pt-0.5">
+                {i + 1}
+              </span>
+              <span className="flex-1 min-w-0">{log.text}</span>
             </div>
           ))
         )}
-        <div ref={logsEndRef} />
       </div>
     </div>
   )
@@ -1684,6 +2211,7 @@ function FlashPanel({
   onDisconnect,
   isSupported,
   onViewLogs,
+  compatibility,
 }: {
   device: ReturnType<typeof useWebSerial>['device']
   binUrl: string | null
@@ -1698,6 +2226,7 @@ function FlashPanel({
   onDisconnect: () => void
   isSupported: boolean
   onViewLogs: () => void
+  compatibility?: CompatibilityReport
 }) {
   return (
     <div className="space-y-4">
@@ -1775,6 +2304,12 @@ function FlashPanel({
               <span>Flash 大小:</span>
               <span className="text-gray-200">{device.flashSize}</span>
             </div>
+            {device.mac && (
+              <div className="flex justify-between text-gray-400">
+                <span>MAC 地址:</span>
+                <span className="text-gray-300 font-mono text-[11px]">{device.mac}</span>
+              </div>
+            )}
             <button
               onClick={onDisconnect}
               className="w-full mt-1.5 text-xs text-red-400 border border-red-800/80 rounded py-1 hover:bg-red-900/20 transition-colors"
@@ -1800,6 +2335,35 @@ function FlashPanel({
           </div>
         )}
       </div>
+
+      {/* 2.5 硬件与项目匹配预检条目 */}
+      {device && compatibility && (
+        <div className={clsx(
+          'rounded-lg p-2.5 border text-xs flex items-center justify-between',
+          !compatibility.isMatched
+            ? 'bg-red-950/40 border-red-600/60 text-red-300'
+            : compatibility.hasWarning
+            ? 'bg-amber-950/40 border-amber-600/60 text-amber-300'
+            : 'bg-green-950/30 border-green-600/50 text-green-300'
+        )}>
+          <div className="flex items-center gap-2 min-w-0 truncate">
+            {!compatibility.isMatched ? (
+              <ShieldX size={15} className="shrink-0 text-red-400" />
+            ) : compatibility.hasWarning ? (
+              <ShieldAlert size={15} className="shrink-0 text-amber-400" />
+            ) : (
+              <ShieldCheck size={15} className="shrink-0 text-green-400" />
+            )}
+            <span className="truncate text-[11px] font-medium">
+              {compatibility.summary}
+            </span>
+          </div>
+
+          <span className="text-[10px] shrink-0 font-mono ml-1 px-1.5 py-0.5 rounded bg-dark-900/80 border border-dark-700/60">
+            {compatibility.isMatched ? '可安全刷写' : '不建议刷写'}
+          </span>
+        </div>
+      )}
 
       {/* 3. 刷写进度与状态展示 */}
       {flashing && (
@@ -1860,13 +2424,20 @@ function FlashPanel({
       <button
         onClick={onFlash}
         disabled={!binUrl || flashing || !isSupported}
-        className="w-full flex items-center justify-center gap-2 bg-purple-700 hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm py-2.5 rounded-md font-medium transition-colors shadow-sm"
+        className={clsx(
+          'w-full flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm py-2.5 rounded-md font-medium transition-colors shadow-sm',
+          compatibility && !compatibility.isMatched
+            ? 'bg-amber-700 hover:bg-amber-600'
+            : 'bg-purple-700 hover:bg-purple-600'
+        )}
       >
         {flashing ? <Loader2 size={15} className="animate-spin" /> : <Zap size={15} />}
         {flashing
           ? `正在刷写中 (${flashProgress}%)...`
           : flashSuccess
           ? '再次刷写固件'
+          : compatibility && !compatibility.isMatched
+          ? '⚠️ 硬件不匹配（点击将弹窗确认）'
           : '一键刷写固件到 ESP32'}
       </button>
 
