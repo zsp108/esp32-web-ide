@@ -2,12 +2,15 @@
 package handlers
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 
 	"github.com/esp32-web-ide/backend/internal/db"
 	"github.com/esp32-web-ide/backend/internal/models"
@@ -218,19 +221,38 @@ func (h *ProjectsHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	result := h.db.DB.Delete(&models.Project{}, "id = ?", id)
-	if result.Error != nil {
-		h.logger.Error("删除项目失败", zap.Error(result.Error))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除失败"})
-		return
-	}
-	if result.RowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "项目不存在"})
-		return
-	}
+	err = h.db.DB.Transaction(func(tx *gorm.DB) error {
+		// 1. 删除关联的编译历史记录
+		if err := tx.Delete(&models.BuildRecord{}, "project_id = ?", id).Error; err != nil {
+			return err
+		}
 
-	// 同时级联删除关联文件（GORM 未配置级联时手动删除）
-	h.db.DB.Delete(&models.ProjectFile{}, "project_id = ?", id)
+		// 2. 删除关联的源码文件
+		if err := tx.Delete(&models.ProjectFile{}, "project_id = ?", id).Error; err != nil {
+			return err
+		}
+
+		// 3. 删除项目本体
+		res := tx.Delete(&models.Project{}, "id = ?", id)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "项目不存在"})
+			return
+		}
+		h.logger.Error("删除项目失败", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("删除失败: %v", err)})
+		return
+	}
 
 	c.Status(http.StatusNoContent)
 }
