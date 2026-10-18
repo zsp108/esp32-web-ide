@@ -37,6 +37,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock   # 访问 Docker daemon
       - ./data/storage:/app/storage
+      - /tmp:/tmp
     depends_on:
       - backend
     deploy:
