@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Cpu, Folder, ChevronRight, Loader2, AlertCircle, GitBranch, CheckCircle2, XCircle, Square } from 'lucide-react'
+import { Plus, Cpu, Folder, ChevronRight, Loader2, AlertCircle, GitBranch, CheckCircle2, XCircle, Square, Trash2 } from 'lucide-react'
 import { projectsApi, boardsApi, importApi } from '../api/client'
 
 interface Board {
@@ -91,6 +91,16 @@ export default function HomePage() {
     },
   })
 
+  const deleteMutation = useMutation({
+    mutationFn: projectsApi.delete,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] })
+    },
+    onError: (err: any) => {
+      alert(`删除项目失败: ${err.response?.data?.error || err.message}`)
+    },
+  })
+
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault()
     createMutation.mutate(form)
@@ -155,44 +165,60 @@ export default function HomePage() {
         ) : (
           <div className="grid gap-3">
             {projects.map((p) => (
-              <button
+              <div
                 key={p.id}
                 onClick={() => navigate(`/editor/${p.id}`)}
-                className="flex items-center justify-between bg-dark-800 hover:bg-dark-700 border border-dark-600 rounded-lg px-5 py-4 text-left transition-colors group"
+                className="flex items-center justify-between bg-dark-800 hover:bg-dark-700/80 border border-dark-600 rounded-lg px-5 py-4 text-left transition-colors group cursor-pointer"
               >
-                <div>
+                <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="font-medium text-gray-100 group-hover:text-white">{p.name}</span>
+                    <span className="font-medium text-gray-100 group-hover:text-white truncate">{p.name}</span>
                     {p.latest_build && (
                       p.latest_build.status === 'running' || p.latest_build.status === 'pending' ? (
-                        <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium bg-blue-500/20 text-blue-400 border border-blue-500/30 animate-pulse">
+                        <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium bg-blue-500/20 text-blue-400 border border-blue-500/30 animate-pulse shrink-0">
                           <Loader2 size={11} className="animate-spin" />
                           后台编译中...
                         </span>
                       ) : p.latest_build.status === 'success' ? (
-                        <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-green-500/20 text-green-400 border border-green-500/30">
+                        <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-green-500/20 text-green-400 border border-green-500/30 shrink-0">
                           <CheckCircle2 size={11} />
                           编译就绪
                         </span>
                       ) : p.latest_build.status === 'cancelled' ? (
-                        <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                        <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-500/20 text-amber-400 border border-amber-500/30 shrink-0">
                           <Square size={10} className="fill-current" />
                           已中止
                         </span>
                       ) : p.latest_build.status === 'failed' || p.latest_build.status === 'timeout' ? (
-                        <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-red-500/20 text-red-400 border border-red-500/30">
+                        <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-red-500/20 text-red-400 border border-red-500/30 shrink-0">
                           <XCircle size={11} />
                           编译未通过
                         </span>
                       ) : null
                     )}
                   </div>
-                  <div className="text-xs text-gray-500 mt-1">
+                  <div className="text-xs text-gray-500 mt-1 truncate">
                     {p.framework.toUpperCase()} · {p.board_fqbn}
                   </div>
                 </div>
-                <ChevronRight size={18} className="text-gray-600 group-hover:text-gray-400" />
-              </button>
+
+                <div className="flex items-center gap-1 shrink-0 ml-3">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (window.confirm(`确定要删除项目「${p.name}」吗？\n该项目的所有源码文件及编译记录都将被永久删除，不可恢复。`)) {
+                        deleteMutation.mutate(p.id)
+                      }
+                    }}
+                    disabled={deleteMutation.isPending}
+                    title="删除项目"
+                    className="opacity-0 group-hover:opacity-100 p-2 text-gray-400 hover:text-red-400 hover:bg-red-950/40 rounded-md transition-all"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                  <ChevronRight size={18} className="text-gray-600 group-hover:text-gray-400 transition-colors" />
+                </div>
+              </div>
             ))}
           </div>
         )}

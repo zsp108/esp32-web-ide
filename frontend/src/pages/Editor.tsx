@@ -3,20 +3,14 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import Editor from '@monaco-editor/react'
 import {
-  Cpu, Wifi, WifiOff, Play, Download, Terminal, ChevronRight,
-  Loader2, CheckCircle2, XCircle, AlertTriangle, FileCode, ArrowLeft, Square, Zap
+  Cpu, Wifi, WifiOff, Play, Download, Terminal,
+  Loader2, CheckCircle2, XCircle, AlertTriangle, FileCode, ArrowLeft, Square, Zap,
+  FilePlus, Trash2, Settings, FileText, Code2
 } from 'lucide-react'
 import { projectsApi, filesApi, buildsApi, boardsApi } from '../api/client'
 import { useWebSerial } from '../hooks/useWebSerial'
 import { useWebSocket, WSMessage } from '../hooks/useWebSocket'
 import clsx from 'clsx'
-
-interface FileNode {
-  name: string
-  path: string
-  type: 'file' | 'dir'
-  children?: FileNode[]
-}
 
 interface LogEntry {
   level: 'info' | 'error' | 'warning'
@@ -53,6 +47,15 @@ export default function EditorPage() {
     flashFirmware,
   } = useWebSerial()
   const [selectedBoard, setSelectedBoard] = useState<string>('')
+  const [showNewFileModal, setShowNewFileModal] = useState(false)
+  const [newFileName, setNewFileName] = useState('')
+  const [saveSuccess, setSaveSuccess] = useState(false)
+
+  const { data: projectFiles = [], refetch: refetchFiles } = useQuery<{ id: string; path: string; size_bytes: number }[]>({
+    queryKey: ['files', projectId],
+    queryFn: () => filesApi.list(projectId!),
+    enabled: !!projectId,
+  })
 
   const { data: project } = useQuery({
     queryKey: ['project', projectId],
@@ -255,17 +258,102 @@ export default function EditorPage() {
     }
   }
 
-  // Placeholder file tree — real implementation would come from backend
-  const fileTree: FileNode[] = project ? [
-    {
-      name: project.name,
-      path: '',
-      type: 'dir',
-      children: [
-        { name: `${project.name}.ino`, path: `${project.name}.ino`, type: 'file' },
-      ],
-    },
-  ] : []
+  // 初始自动选择主 .ino 文件或第一个文件
+  useEffect(() => {
+    if (projectFiles.length > 0 && !activeFile) {
+      const ino = projectFiles.find(f => f.path.endsWith('.ino'))
+      const first = ino || projectFiles[0]
+      if (first) {
+        loadFile(first.path)
+      }
+    }
+  }, [projectFiles, activeFile])
+
+  // 键盘快捷键 Ctrl+S / Cmd+S 快速保存文件
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        e.preventDefault()
+        if (activeFile && fileContent) {
+          saveFileMutation.mutate(undefined, {
+            onSuccess: () => {
+              setSaveSuccess(true)
+              setTimeout(() => setSaveSuccess(false), 2000)
+            },
+          })
+        }
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [activeFile, fileContent, saveFileMutation])
+
+  // 切换文件（先保存上一个已编辑的文件）
+  const handleSelectFile = async (path: string) => {
+    if (activeFile === path) return
+    if (activeFile && fileContent) {
+      try {
+        await filesApi.upload(projectId!, activeFile, fileContent)
+      } catch (err) {
+        console.error('自动保存文件失败:', err)
+      }
+    }
+    loadFile(path)
+  }
+
+  // 新建文件
+  const handleCreateFile = async (e: React.FormEvent) => {
+    e.preventDefault()
+    let clean = newFileName.trim().replace(/^\/+/, '')
+    if (!clean) return
+
+    // 如果未带后缀，默认创建 .cpp
+    if (!clean.includes('.')) {
+      clean = clean + '.cpp'
+    }
+
+    let template = `// ${clean}\n`
+    if (clean.endsWith('.cpp')) {
+      template = `#include <Arduino.h>\n\n// TODO: 实现相关代码\n`
+    } else if (clean.endsWith('.h') || clean.endsWith('.hpp')) {
+      template = `#pragma once\n#include <Arduino.h>\n\n// TODO: 声明函数与类\n`
+    } else if (clean.endsWith('.ini')) {
+      template = `[env:esp32s3]\nplatform = espressif32\nframework = arduino\n\n; 依赖驱动库配置 (编译时将自动下载并缓存)\nlib_deps =\n    adafruit/Adafruit GFX Library\n    adafruit/Adafruit ST7735 and ST7789 Library\n`
+    } else if (clean.endsWith('.c')) {
+      template = `#include <stdio.h>\n\n// TODO: C 语言实现\n`
+    }
+
+    try {
+      await filesApi.upload(projectId!, clean, template)
+      await refetchFiles()
+      loadFile(clean)
+      setShowNewFileModal(false)
+      setNewFileName('')
+    } catch (err: any) {
+      alert(`创建文件失败: ${err.response?.data?.error || err.message}`)
+    }
+  }
+
+  // 删除文件
+  const handleDeleteFile = async (filePath: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!window.confirm(`确定要删除文件「${filePath}」吗？`)) return
+    try {
+      await filesApi.delete(projectId!, filePath)
+      await refetchFiles()
+      if (activeFile === filePath) {
+        const remaining = projectFiles.filter(f => f.path !== filePath)
+        if (remaining.length > 0) {
+          loadFile(remaining[0].path)
+        } else {
+          setActiveFile(null)
+          setFileContent('')
+        }
+      }
+    } catch (err: any) {
+      alert(`删除文件失败: ${err.message}`)
+    }
+  }
 
   const panelTabs: { id: RightPanel; label: string; badge?: React.ReactNode }[] = [
     { id: 'device', label: '设备' },
@@ -424,34 +512,128 @@ export default function EditorPage() {
 
       <div className="flex flex-1 overflow-hidden">
         {/* File tree */}
-        <aside className="w-52 shrink-0 border-r border-dark-600 bg-dark-800 overflow-y-auto">
-          <div className="px-3 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">文件</div>
-          {fileTree.map(node => (
-            <FileTreeNode key={node.path} node={node} activeFile={activeFile} onSelect={loadFile} depth={0} />
-          ))}
+        <aside className="w-56 shrink-0 border-r border-dark-600 bg-dark-800 flex flex-col overflow-hidden">
+          <div className="flex items-center justify-between px-3 py-2 border-b border-dark-600/80 shrink-0 bg-dark-850">
+            <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">文件列表</span>
+            <button
+              onClick={() => setShowNewFileModal(true)}
+              className="flex items-center gap-1 text-[11px] text-blue-400 hover:text-blue-300 hover:bg-blue-900/30 px-2 py-0.5 rounded transition-colors"
+              title="新建代码或配置文件 (.cpp, .h, .ini 等)"
+            >
+              <FilePlus size={13} />
+              <span>新建</span>
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto py-1 space-y-0.5">
+            {projectFiles.map(file => {
+              const isActive = activeFile === file.path
+              let Icon = FileText
+              let iconColor = 'text-gray-400'
+              if (file.path.endsWith('.ino')) {
+                Icon = Cpu
+                iconColor = 'text-teal-400'
+              } else if (file.path.endsWith('.cpp') || file.path.endsWith('.c')) {
+                Icon = Code2
+                iconColor = 'text-blue-400'
+              } else if (file.path.endsWith('.h') || file.path.endsWith('.hpp')) {
+                Icon = FileCode
+                iconColor = 'text-amber-400'
+              } else if (file.path.endsWith('.ini')) {
+                Icon = Settings
+                iconColor = 'text-purple-400'
+              }
+
+              const isMainIno = file.path.endsWith('.ino')
+
+              return (
+                <div
+                  key={file.path}
+                  onClick={() => handleSelectFile(file.path)}
+                  className={clsx(
+                    'flex items-center justify-between px-3 py-1.5 text-xs truncate transition-colors cursor-pointer group',
+                    isActive ? 'bg-blue-600/20 text-blue-300 font-medium' : 'text-gray-400 hover:text-gray-200 hover:bg-dark-700/60'
+                  )}
+                >
+                  <div className="flex items-center gap-2 truncate min-w-0">
+                    <Icon size={14} className={clsx('shrink-0', iconColor)} />
+                    <span className="truncate">{file.path}</span>
+                  </div>
+                  {!isMainIno && (
+                    <button
+                      onClick={(e) => handleDeleteFile(file.path, e)}
+                      className="opacity-0 group-hover:opacity-100 p-1 text-gray-500 hover:text-red-400 rounded transition-all shrink-0 ml-1"
+                      title={`删除 ${file.path}`}
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  )}
+                </div>
+              )
+            })}
+          </div>
         </aside>
 
         {/* Monaco Editor */}
-        <main className="flex-1 overflow-hidden">
+        <main className="flex-1 flex flex-col overflow-hidden bg-dark-900">
           {activeFile ? (
-            <Editor
-              height="100%"
-              language={activeFile.endsWith('.ino') || activeFile.endsWith('.cpp') || activeFile.endsWith('.h') ? 'cpp' : 'plaintext'}
-              theme="vs-dark"
-              value={fileContent}
-              onChange={v => setFileContent(v ?? '')}
-              options={{
-                fontSize: 14,
-                fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-                minimap: { enabled: false },
-                scrollBeyondLastLine: false,
-                tabSize: 2,
-              }}
-            />
+            <>
+              {/* Editor sub-header / tab */}
+              <div className="flex items-center justify-between px-4 py-1.5 border-b border-dark-600 bg-dark-850 shrink-0 text-xs">
+                <div className="flex items-center gap-2 text-gray-300 font-mono">
+                  <span className="text-gray-100 font-semibold">{activeFile}</span>
+                  {saveSuccess && (
+                    <span className="text-[11px] text-green-400 flex items-center gap-1 animate-pulse">
+                      <CheckCircle2 size={11} /> 已保存
+                    </span>
+                  )}
+                </div>
+                <button
+                  onClick={() => {
+                    if (activeFile && fileContent) {
+                      saveFileMutation.mutate(undefined, {
+                        onSuccess: () => {
+                          setSaveSuccess(true)
+                          setTimeout(() => setSaveSuccess(false), 2000)
+                        },
+                      })
+                    }
+                  }}
+                  disabled={saveFileMutation.isPending}
+                  className="text-[11px] text-gray-400 hover:text-white bg-dark-700 hover:bg-dark-600 border border-dark-500 px-2 py-0.5 rounded transition-colors"
+                  title="保存当前文件 (Ctrl+S)"
+                >
+                  {saveFileMutation.isPending ? '保存中...' : '保存 (Ctrl+S)'}
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-hidden">
+                <Editor
+                  height="100%"
+                  language={
+                    activeFile.endsWith('.ini') ? 'ini' :
+                    (activeFile.endsWith('.ino') || activeFile.endsWith('.cpp') || activeFile.endsWith('.c') || activeFile.endsWith('.h') || activeFile.endsWith('.hpp')) ? 'cpp' :
+                    activeFile.endsWith('.json') ? 'json' :
+                    activeFile.endsWith('.md') ? 'markdown' :
+                    'plaintext'
+                  }
+                  theme="vs-dark"
+                  value={fileContent}
+                  onChange={v => setFileContent(v ?? '')}
+                  options={{
+                    fontSize: 14,
+                    fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+                    minimap: { enabled: false },
+                    scrollBeyondLastLine: false,
+                    tabSize: 2,
+                  }}
+                />
+              </div>
+            </>
           ) : (
             <div className="h-full flex flex-col items-center justify-center text-gray-600 gap-3">
               <FileCode size={48} className="opacity-20" />
-              <p className="text-sm">从左侧文件树选择文件</p>
+              <p className="text-sm">从左侧选择文件或点击「新建」添加代码与配置</p>
             </div>
           )}
         </main>
@@ -537,54 +719,77 @@ export default function EditorPage() {
           </div>
         </aside>
       </div>
+
+      {/* New File Modal */}
+      {showNewFileModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4">
+          <div className="bg-dark-800 border border-dark-600 rounded-xl shadow-2xl w-full max-w-md p-6">
+            <h3 className="text-base font-semibold text-gray-100 mb-2">新建文件</h3>
+            <p className="text-xs text-gray-400 mb-4 leading-relaxed">
+              支持新建代码文件（<code className="text-blue-300">.cpp</code>, <code className="text-amber-300">.h</code>, <code className="text-teal-300">.ino</code>）、配置文件（<code className="text-purple-300">platformio.ini</code>, <code className="text-purple-300">config.ini</code>）或依赖清单（<code className="text-green-300">libraries.txt</code>）。
+            </p>
+
+            <form onSubmit={handleCreateFile} className="space-y-4">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1.5">文件路径 / 名称</label>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  placeholder="例如: display.cpp, display.h, platformio.ini"
+                  value={newFileName}
+                  onChange={e => setNewFileName(e.target.value)}
+                  className="w-full bg-dark-900 border border-dark-500 rounded-md px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-blue-500 font-mono"
+                />
+              </div>
+
+              {/* Quick suggestion tags */}
+              <div className="space-y-1.5">
+                <span className="text-[11px] text-gray-500">常用模板推荐：</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    'display.cpp',
+                    'display.h',
+                    'platformio.ini',
+                    'libraries.txt',
+                    'config.h',
+                  ].map(suggest => (
+                    <button
+                      key={suggest}
+                      type="button"
+                      onClick={() => setNewFileName(suggest)}
+                      className="text-[11px] bg-dark-700 hover:bg-dark-600 text-gray-300 px-2 py-0.5 rounded border border-dark-500 transition-colors font-mono"
+                    >
+                      + {suggest}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-3 pt-3 border-t border-dark-700">
+                <button
+                  type="button"
+                  onClick={() => setShowNewFileModal(false)}
+                  className="px-4 py-2 text-xs text-gray-400 hover:text-gray-200 transition-colors"
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  className="bg-blue-600 hover:bg-blue-500 text-white text-xs px-4 py-2 rounded-md font-medium transition-colors"
+                >
+                  确认创建
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
 /* ── Sub-components ── */
-
-function FileTreeNode({
-  node, activeFile, onSelect, depth,
-}: {
-  node: FileNode
-  activeFile: string | null
-  onSelect: (path: string) => void
-  depth: number
-}) {
-  const [open, setOpen] = useState(true)
-  const isActive = activeFile === node.path
-
-  if (node.type === 'dir') {
-    return (
-      <div>
-        <button
-          onClick={() => setOpen(o => !o)}
-          className="flex items-center gap-1 w-full text-left px-3 py-1 text-xs text-gray-400 hover:text-gray-200"
-          style={{ paddingLeft: `${12 + depth * 12}px` }}
-        >
-          <ChevronRight size={12} className={clsx('transition-transform', open && 'rotate-90')} />
-          {node.name}
-        </button>
-        {open && node.children?.map(child => (
-          <FileTreeNode key={child.path} node={child} activeFile={activeFile} onSelect={onSelect} depth={depth + 1} />
-        ))}
-      </div>
-    )
-  }
-
-  return (
-    <button
-      onClick={() => onSelect(node.path)}
-      className={clsx(
-        'w-full text-left px-3 py-1 text-xs truncate transition-colors',
-        isActive ? 'bg-blue-600/20 text-blue-300' : 'text-gray-400 hover:text-gray-200 hover:bg-dark-700'
-      )}
-      style={{ paddingLeft: `${24 + depth * 12}px` }}
-    >
-      {node.name}
-    </button>
-  )
-}
 
 function DevicePanel({ device, connecting, error, isSupported, onConnect, onDisconnect }: {
   device: ReturnType<typeof useWebSerial>['device']

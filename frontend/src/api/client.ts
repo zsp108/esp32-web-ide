@@ -26,6 +26,7 @@ export const projectsApi = {
     apiClient.post('/projects', data).then(r => r.data),
   get: (id: string) => apiClient.get(`/projects/${id}`).then(r => r.data),
   list: () => apiClient.get('/projects').then(r => r.data),
+  delete: (id: string) => apiClient.delete(`/projects/${id}`).then(r => r.data),
 }
 
 export const filesApi = {
@@ -40,6 +41,10 @@ export const filesApi = {
   },
   getContent: (projectId: string, filePath: string) =>
     apiClient.get(`/projects/${projectId}/files/${filePath}`).then(r => r.data),
+  list: (projectId: string) =>
+    apiClient.get(`/projects/${projectId}/files`).then(r => r.data),
+  delete: (projectId: string, filePath: string) =>
+    apiClient.delete(`/projects/${projectId}/files/${filePath}`).then(r => r.data),
 }
 
 export const buildsApi = {

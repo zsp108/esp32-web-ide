@@ -132,23 +132,37 @@ func (s *BuildService) Run(ctx context.Context, buildID, projectID string) error
 	// 收集编译日志
 	var logBuf strings.Builder
 	lastPercent := 25
+	libCacheDir := "/tmp/arduino-libraries"
+	_ = os.MkdirAll(libCacheDir, 0777)
+
 	opts := BuildOptions{
 		Image:          image,
 		Cmd:            cmd,
 		Env:            env,
 		TimeoutSec:     s.cfg.BuildTimeoutSeconds,
-		NetworkEnabled: build.Framework == "espidf",
+		NetworkEnabled: true,
 		Binds: []string{
 			srcDir + ":/src:rw",
 			outputDir + ":/output:rw",
 			srcDir + ":/workspace:rw",
+			libCacheDir + ":/root/Arduino/libraries:rw",
 		},
 		LogCallback: func(line string) {
 			logBuf.WriteString(line + "\n")
 			s.publishLog(buildID, line)
 
 			lower := strings.ToLower(line)
-			if strings.Contains(lower, "compiling sketch") || strings.Contains(lower, "compiling project") {
+			if strings.Contains(line, "[LIBRARY_DOWNLOAD]") || strings.Contains(line, "Downloading") || strings.Contains(line, "Installing") {
+				stageText := line
+				if idx := strings.Index(line, "[LIBRARY_DOWNLOAD]"); idx != -1 {
+					stageText = strings.TrimSpace(line[idx+len("[LIBRARY_DOWNLOAD]"):])
+				} else if idx := strings.Index(line, "Downloading"); idx != -1 {
+					stageText = "下载依赖: " + strings.TrimSpace(line[idx+len("Downloading"):])
+				} else if idx := strings.Index(line, "Installing"); idx != -1 {
+					stageText = "安装依赖: " + strings.TrimSpace(line[idx+len("Installing"):])
+				}
+				s.publishProgress(buildID, 25, stageText)
+			} else if strings.Contains(lower, "compiling sketch") || strings.Contains(lower, "compiling project") {
 				if lastPercent < 35 {
 					lastPercent = 35
 					s.publishProgress(buildID, 35, "编译项目源码...")
