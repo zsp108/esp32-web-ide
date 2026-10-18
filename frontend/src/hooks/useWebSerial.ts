@@ -2,6 +2,13 @@ import { useState, useCallback } from 'react'
 import { ESPLoader, Transport, classicReset, usbJTAGSerialReset } from 'esptool-js'
 import axios from 'axios'
 
+export interface FlashSegment {
+  offset: number
+  name: string
+  size?: number
+  url: string
+}
+
 export interface DeviceInfo {
   chip: string
   flashSize: string
@@ -110,7 +117,7 @@ export function useWebSerial() {
   }, [device])
 
   const flashFirmware = useCallback(async (
-    binUrl: string,
+    target: string | FlashSegment[],
     onProgress?: (pct: number) => void,
     onLog?: (msg: string) => void,
   ) => {
@@ -120,22 +127,21 @@ export function useWebSerial() {
 
     setFlashing(true)
     setFlashProgress(0)
-    setFlashStage('正在下载固件...')
+    setFlashStage('正在解析固件清单...')
     setFlashSuccess(false)
     setError(null)
 
-    let activeTransport: Transport | null = null
-    let activeLoader: ESPLoader | null = null
+    let segments: FlashSegment[] = []
+    if (typeof target === 'string') {
+      segments = [{ offset: 0x0, name: 'firmware.bin', url: target }]
+    } else if (Array.isArray(target) && target.length > 0) {
+      segments = target
+    } else {
+      throw new Error('无效的固件烧录参数')
+    }
 
-    try {
-      onLog?.('正在从服务器获取已编译的固件 (.bin)...')
-      const resp = await axios.get(binUrl, { responseType: 'blob' })
-      const blob = resp.data as Blob
-      const kbSize = (blob.size / 1024).toFixed(1)
-      onLog?.(`固件下载完成 (${kbSize} KB)，正在解析二进制数据...`)
-      setFlashStage(`固件下载完成 (${kbSize} KB)，准备串口...`)
-
-      const fileData = await new Promise<string>((resolve, reject) => {
+    const blobToBinary = (blob: Blob): Promise<string> => {
+      return new Promise<string>((resolve, reject) => {
         const reader = new FileReader()
         reader.onload = () => resolve(reader.result as string)
         reader.onerror = () => reject(new Error('读取固件二进制数据失败'))
@@ -157,6 +163,41 @@ export function useWebSerial() {
           bufReader.readAsArrayBuffer(blob)
         }
       })
+    }
+
+    let activeTransport: Transport | null = null
+    let activeLoader: ESPLoader | null = null
+
+    try {
+      if (segments.length > 1) {
+        onLog?.(`[固件分析] 检测到多段式固件架构 (${segments.length} 个分段):`)
+        segments.forEach((seg) => {
+          const hexOffset = '0x' + seg.offset.toString(16).toUpperCase()
+          const sizeStr = seg.size ? ` (${(seg.size / 1024).toFixed(1)} KB)` : ''
+          onLog?.(`  ├─ [${hexOffset}] ${seg.name}${sizeStr}`)
+        })
+      } else {
+        const hexOffset = '0x' + segments[0].offset.toString(16).toUpperCase()
+        onLog?.(`[固件分析] 检测到单镜像固件 (写入基地址: ${hexOffset})`)
+      }
+
+      setFlashStage(`正在下载固件产物...`)
+      const fileArray: Array<{ data: string; address: number }> = []
+
+      for (let i = 0; i < segments.length; i++) {
+        const seg = segments[i]
+        const hexOffset = '0x' + seg.offset.toString(16).toUpperCase()
+        onLog?.(`正在从服务器获取固件分段 [${hexOffset}] ${seg.name}...`)
+        setFlashStage(`正在下载分段 ${seg.name} (${i + 1}/${segments.length})...`)
+        const resp = await axios.get(seg.url, { responseType: 'blob' })
+        const blob = resp.data as Blob
+        const binStr = await blobToBinary(blob)
+        fileArray.push({
+          data: binStr,
+          address: seg.offset,
+        })
+      }
+      onLog?.(`所有固件分段已加载完毕 (${fileArray.length} 个)，准备连接串口设备...`)
 
       const terminal = {
         clean: () => {},
@@ -216,11 +257,11 @@ export function useWebSerial() {
         })
       }
 
-      onLog?.('开始擦除并写入固件至 ESP32 Flash (偏移地址 0x0)...')
+      onLog?.(`开始向 ESP32 Flash 写入 ${fileArray.length} 个分段数据...`)
       setFlashStage('正在擦除并烧录固件...')
 
       await activeLoader.writeFlash({
-        fileArray: [{ data: fileData, address: 0x0 }],
+        fileArray,
         flashSize: 'keep',
         flashMode: 'keep',
         flashFreq: 'keep',

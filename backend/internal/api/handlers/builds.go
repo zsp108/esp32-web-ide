@@ -4,6 +4,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -194,6 +195,11 @@ func (h *BuildsHandler) Get(c *gin.Context) {
 		stage = build.ErrorMsg
 	}
 
+	var segments []models.FlashSegment
+	if build.FlashSegments != "" {
+		_ = json.Unmarshal([]byte(build.FlashSegments), &segments)
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"id":              build.ID,
 		"project_id":      build.ProjectID,
@@ -202,6 +208,8 @@ func (h *BuildsHandler) Get(c *gin.Context) {
 		"board_fqbn":      build.BoardFQBN,
 		"bin_storage_key": build.BinStorageKey,
 		"bin_size_bytes":  build.BinSizeBytes,
+		"flash_segments":  build.FlashSegments,
+		"segments":        segments,
 		"flash_pct":       build.FlashPct,
 		"ram_pct":         build.RAMPct,
 		"build_log":       build.BuildLog,
@@ -252,6 +260,42 @@ func (h *BuildsHandler) Download(c *gin.Context) {
 		if filename == "." || filename == "/" || filename == "" {
 			filename = "firmware.bin"
 		}
+		c.FileAttachment(filePath, filename)
+		return
+	}
+
+	c.Redirect(http.StatusFound, presignURL)
+}
+
+// DownloadArtifact godoc
+// @Summary  下载指定名称的编译分段产物（如 bootloader.bin、partitions.bin）
+// @Tags     builds
+// @Param    id        path  string  true  "BuildRecord UUID"
+// @Param    filename  path  string  true  "文件名"
+// @Success  200
+// @Router   /api/v1/builds/{id}/artifacts/{filename} [get]
+func (h *BuildsHandler) DownloadArtifact(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的 Build ID"})
+		return
+	}
+
+	filename := filepath.Base(c.Param("filename"))
+	if filename == "." || filename == "/" || filename == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的文件名"})
+		return
+	}
+
+	storageKey := fmt.Sprintf("builds/%s/%s", id.String(), filename)
+	presignURL, err := h.storage.PresignedURL(c.Request.Context(), storageKey, 15*time.Minute)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "分段固件不存在"})
+		return
+	}
+
+	if strings.HasPrefix(presignURL, "file://") {
+		filePath := strings.TrimPrefix(presignURL, "file://")
 		c.FileAttachment(filePath, filename)
 		return
 	}
@@ -339,8 +383,9 @@ func (h *BuildsHandler) ListByProject(c *gin.Context) {
 
 	type BuildItem struct {
 		models.BuildRecord
-		Progress int    `json:"progress"`
-		Stage    string `json:"stage"`
+		Segments []models.FlashSegment `json:"segments,omitempty"`
+		Progress int                   `json:"progress"`
+		Stage    string                `json:"stage"`
 	}
 
 	result := make([]BuildItem, len(builds))
@@ -372,8 +417,14 @@ func (h *BuildsHandler) ListByProject(c *gin.Context) {
 			stage = b.ErrorMsg
 		}
 
+		var segs []models.FlashSegment
+		if b.FlashSegments != "" {
+			_ = json.Unmarshal([]byte(b.FlashSegments), &segs)
+		}
+
 		result[i] = BuildItem{
 			BuildRecord: b,
+			Segments:    segs,
 			Progress:    progress,
 			Stage:       stage,
 		}

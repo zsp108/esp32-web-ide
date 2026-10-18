@@ -76,6 +76,7 @@ func NewRouter(cfg *config.Config, database *db.Database, storage services.Stora
 			builds.POST("", buildsHandler.Create)
 			builds.GET("/:id", buildsHandler.Get)
 			builds.GET("/:id/download", buildsHandler.Download)
+			builds.GET("/:id/artifacts/:filename", buildsHandler.DownloadArtifact)
 			builds.DELETE("/:id", buildsHandler.Cancel)
 			builds.POST("/:id/cancel", buildsHandler.Cancel)
 		}

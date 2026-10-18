@@ -2,6 +2,7 @@
 package services
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -348,12 +350,14 @@ fi
 
 	s.publishProgress(buildID, 95, "正在保存固件产物...")
 
-	// 4. 上传编译产物：优先查找 merged-firmware.bin，回退到 firmware.bin
-	binPath := resolveBinPath(srcDir, outputDir, build.Framework)
-	binInfo, statErr := os.Stat(binPath)
-	if statErr != nil || binInfo.Size() == 0 {
+	// 4. 上传编译产物：智能解析多段固件或单镜像固件
+	segments, primaryKey, primarySize, processErr := s.processBuildArtifacts(ctx, buildID, srcDir, outputDir, build.BoardFQBN, build.Framework)
+	if processErr != nil || len(segments) == 0 {
 		errText := "未在项目输出目录中找到有效的 .bin 固件产物，编译失败"
-		s.logger.Error(errText, zap.String("build_id", buildID), zap.String("bin_path", binPath))
+		if processErr != nil {
+			errText = processErr.Error()
+		}
+		s.logger.Error(errText, zap.String("build_id", buildID))
 		s.db.DB.Model(&build).Updates(map[string]interface{}{
 			"status":      models.BuildStatusFailed,
 			"build_log":   fullLog + "\n[ERROR] " + errText,
@@ -365,31 +369,26 @@ fi
 		return errors.New(errText)
 	}
 
-	binName := filepath.Base(binPath)
-	binKey := fmt.Sprintf("builds/%s/%s", buildID, binName)
-	binSize, uploadErr := s.uploadBin(ctx, binPath, binKey)
-	if uploadErr != nil || binSize == 0 {
-		errText := fmt.Sprintf("固件产物存储失败: %v", uploadErr)
-		s.logger.Error(errText, zap.String("build_id", buildID))
-		s.db.DB.Model(&build).Updates(map[string]interface{}{
-			"status":      models.BuildStatusFailed,
-			"build_log":   fullLog + "\n[ERROR] " + errText,
-			"duration_ms": durationMs,
-			"error_msg":   errText,
-		})
-		s.publishLog(buildID, "[ERROR] "+errText)
-		s.publishDone(buildID, "failed", "", errText)
-		return uploadErr
-	}
+	segmentsJSON, _ := json.Marshal(segments)
 
 	// 5. 更新编译记录为成功
 	s.db.DB.Model(&build).Updates(map[string]interface{}{
 		"status":          models.BuildStatusSuccess,
-		"bin_storage_key": binKey,
-		"bin_size_bytes":  binSize,
+		"bin_storage_key": primaryKey,
+		"bin_size_bytes":  primarySize,
+		"flash_segments":  string(segmentsJSON),
 		"build_log":       fullLog,
 		"duration_ms":     durationMs,
 	})
+
+	if len(segments) > 1 {
+		s.publishLog(buildID, fmt.Sprintf("[INFO] 固件架构: 多段式烧录布局 (%d 个分段)", len(segments)))
+		for _, seg := range segments {
+			s.publishLog(buildID, fmt.Sprintf("  ├─ [0x%X] %s (%d KB)", seg.Offset, seg.Name, seg.Size/1024))
+		}
+	} else {
+		s.publishLog(buildID, fmt.Sprintf("[INFO] 固件架构: 单镜像固件 [0x%X] %s (%d KB)", segments[0].Offset, segments[0].Name, segments[0].Size/1024))
+	}
 
 	s.publishLog(buildID, fmt.Sprintf("[SUCCESS] 编译完成，耗时 %dms", durationMs))
 	s.publishProgress(buildID, 100, "编译成功")
@@ -509,83 +508,228 @@ func resolveBoardParams(boardFQBN string) (idfTarget, flashSize string) {
 	}
 }
 
-// resolveBinPath 查找编译产物路径，优先查找 merged-firmware.bin，回退到 firmware.bin。
-func resolveBinPath(srcDir, outputDir, framework string) string {
-	mergedCandidates := []string{
-		filepath.Join(outputDir, "merged-firmware.bin"),
-		filepath.Join(srcDir, "output", "merged-firmware.bin"),
-		filepath.Join(srcDir, "build", "merged-firmware.bin"),
+// rawSegment 内部临时结构
+type rawSegment struct {
+	offset   int64
+	filename string
+	absPath  string
+	size     int64
+}
+
+// resolveBootloaderOffset 根据板型 FQBN 确定引导程序在 Flash 中的基地址。
+func resolveBootloaderOffset(boardFQBN string) int64 {
+	lower := strings.ToLower(boardFQBN)
+	// 经典初代 ESP32 (非 s2/s3/c2/c3/c5/c6/h2/p4) 的 bootloader 偏移是 0x1000
+	if strings.Contains(lower, "esp32:") {
+		if strings.Contains(lower, "esp32s2") || strings.Contains(lower, "esp32s3") ||
+			strings.Contains(lower, "esp32c2") || strings.Contains(lower, "esp32c3") ||
+			strings.Contains(lower, "esp32c5") || strings.Contains(lower, "esp32c6") ||
+			strings.Contains(lower, "esp32c61") || strings.Contains(lower, "esp32h2") ||
+			strings.Contains(lower, "esp32p4") {
+			return 0x0
+		}
+		return 0x1000
 	}
-	for _, p := range mergedCandidates {
+	return 0x0
+}
+
+// processBuildArtifacts 智能分析产物目录中的 bin 文件，支持多段式布局和单镜像布局。
+func (s *BuildService) processBuildArtifacts(ctx context.Context, buildID, srcDir, outputDir, boardFQBN, framework string) ([]models.FlashSegment, string, int64, error) {
+	// 1. 查找全部生成的 .bin 文件，优先扫描 outputDir
+	type binFile struct {
+		name string
+		path string
+		size int64
+	}
+
+	var bins []binFile
+	collectBins := func(dir string) {
+		_ = filepath.Walk(dir, func(p string, fi os.FileInfo, err error) error {
+			if err != nil || fi.IsDir() {
+				return nil
+			}
+			// 忽略临时脚本与非 bin 文件
+			if strings.HasSuffix(fi.Name(), ".bin") && fi.Name() != "custom_compile.sh" && fi.Size() > 0 {
+				bins = append(bins, binFile{
+					name: fi.Name(),
+					path: p,
+					size: fi.Size(),
+				})
+			}
+			return nil
+		})
+	}
+
+	collectBins(outputDir)
+	// 若 outputDir 未能找到任何 bin，回退扫描 srcDir（但排除隐藏目录和 node_modules）
+	if len(bins) == 0 {
+		collectBins(srcDir)
+	}
+
+	if len(bins) == 0 {
+		return nil, "", 0, fmt.Errorf("未在项目或输出目录中检测到任何生成的 .bin 固件")
+	}
+
+	var rawSegs []rawSegment
+
+	// 2. 检查是否有 ESP-IDF 或 PlatformIO 的 flash_project_args
+	var flashArgsPath string
+	for _, p := range []string{
+		filepath.Join(outputDir, "flash_project_args"),
+		filepath.Join(srcDir, "build", "flash_project_args"),
+		filepath.Join(srcDir, "flash_project_args"),
+	} {
 		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
-			return p
+			flashArgsPath = p
+			break
 		}
 	}
 
-	var mergedFound string
-	_ = filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
-		if err == nil && !info.IsDir() && info.Name() == "merged-firmware.bin" {
-			mergedFound = path
-			return filepath.SkipAll
-		}
-		return nil
-	})
-	if mergedFound != "" {
-		return mergedFound
-	}
-
-	firmwareCandidates := []string{
-		filepath.Join(outputDir, "firmware.bin"),
-		filepath.Join(srcDir, "output", "firmware.bin"),
-		filepath.Join(srcDir, "build", "firmware.bin"),
-	}
-	for _, p := range firmwareCandidates {
-		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
-			return p
-		}
-	}
-
-	var firmwareFound string
-	_ = filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
-		if err == nil && !info.IsDir() && info.Name() == "firmware.bin" {
-			firmwareFound = path
-			return filepath.SkipAll
-		}
-		return nil
-	})
-	if firmwareFound != "" {
-		return firmwareFound
-	}
-
-	if entries, err := os.ReadDir(outputDir); err == nil {
-		for _, e := range entries {
-			if !e.IsDir() && (strings.HasSuffix(e.Name(), ".merged.bin") || strings.Contains(e.Name(), "merged")) {
-				return filepath.Join(outputDir, e.Name())
+	if flashArgsPath != "" {
+		if f, err := os.Open(flashArgsPath); err == nil {
+			defer f.Close()
+			scanner := bufio.NewScanner(f)
+			baseDir := filepath.Dir(flashArgsPath)
+			for scanner.Scan() {
+				line := strings.TrimSpace(scanner.Text())
+				if strings.HasPrefix(line, "0x") {
+					parts := strings.Fields(line)
+					if len(parts) >= 2 {
+						offset, parseErr := strconv.ParseInt(parts[0], 0, 64)
+						relPath := parts[1]
+						if parseErr == nil {
+							absP := filepath.Join(baseDir, relPath)
+							if fi, sErr := os.Stat(absP); sErr == nil && !fi.IsDir() && fi.Size() > 0 {
+								rawSegs = append(rawSegs, rawSegment{
+									offset:   offset,
+									filename: fi.Name(),
+									absPath:  absP,
+									size:     fi.Size(),
+								})
+							}
+						}
+					}
+				}
 			}
 		}
-		for _, e := range entries {
-			if !e.IsDir() && strings.HasSuffix(e.Name(), ".bin") && !strings.HasSuffix(e.Name(), ".bootloader.bin") && !strings.HasSuffix(e.Name(), ".partitions.bin") {
-				return filepath.Join(outputDir, e.Name())
+	}
+
+	// 3. 若未通过 flash_project_args 解析出分段，根据文件名模式智能识别
+	if len(rawSegs) == 0 {
+		var bootloaderFile *binFile
+		var partitionFile *binFile
+		var bootApp0File *binFile
+		var mergedFile *binFile
+		var appFiles []binFile
+
+		for i := range bins {
+			b := &bins[i]
+			lower := strings.ToLower(b.name)
+			if strings.Contains(lower, "merged") {
+				mergedFile = b
+			} else if strings.Contains(lower, "bootloader") {
+				bootloaderFile = b
+			} else if strings.Contains(lower, "partition") {
+				partitionFile = b
+			} else if strings.Contains(lower, "boot_app0") || strings.Contains(lower, "bootapp0") {
+				bootApp0File = b
+			} else {
+				appFiles = append(appFiles, *b)
 			}
 		}
-	}
 
-	var anyBin string
-	_ = filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
-		if err == nil && !info.IsDir() && strings.HasSuffix(info.Name(), ".bin") {
-			anyBin = path
-			return filepath.SkipAll
+		// 如果同时具备 bootloader、partitions 以及 app，构建标准多段布局
+		if bootloaderFile != nil && partitionFile != nil && len(appFiles) > 0 {
+			rawSegs = append(rawSegs, rawSegment{
+				offset:   resolveBootloaderOffset(boardFQBN),
+				filename: bootloaderFile.name,
+				absPath:  bootloaderFile.path,
+				size:     bootloaderFile.size,
+			})
+			rawSegs = append(rawSegs, rawSegment{
+				offset:   0x8000,
+				filename: partitionFile.name,
+				absPath:  partitionFile.path,
+				size:     partitionFile.size,
+			})
+			if bootApp0File != nil {
+				rawSegs = append(rawSegs, rawSegment{
+					offset:   0xe000,
+					filename: bootApp0File.name,
+					absPath:  bootApp0File.path,
+					size:     bootApp0File.size,
+				})
+			}
+			// 主应用段
+			mainApp := appFiles[0]
+			rawSegs = append(rawSegs, rawSegment{
+				offset:   0x10000,
+				filename: mainApp.name,
+				absPath:  mainApp.path,
+				size:     mainApp.size,
+			})
+		} else if mergedFile != nil {
+			// 单镜像已合包固件
+			rawSegs = append(rawSegs, rawSegment{
+				offset:   0x0,
+				filename: mergedFile.name,
+				absPath:  mergedFile.path,
+				size:     mergedFile.size,
+			})
+		} else if len(bins) == 1 {
+			// 仅有单一 bin 文件，作为单镜像
+			rawSegs = append(rawSegs, rawSegment{
+				offset:   0x0,
+				filename: bins[0].name,
+				absPath:  bins[0].path,
+				size:     bins[0].size,
+			})
+		} else if len(appFiles) > 0 {
+			// 兜底：若只有普通 app bin，单镜像写入
+			rawSegs = append(rawSegs, rawSegment{
+				offset:   0x0,
+				filename: appFiles[0].name,
+				absPath:  appFiles[0].path,
+				size:     appFiles[0].size,
+			})
 		}
-		return nil
-	})
-	if anyBin != "" {
-		return anyBin
 	}
 
-	if framework == "espidf" {
-		return filepath.Join(outputDir, "merged-firmware.bin")
+	if len(rawSegs) == 0 {
+		return nil, "", 0, fmt.Errorf("未能成功解析出有效的烧录分段")
 	}
-	return filepath.Join(outputDir, "firmware.bin")
+
+	// 4. 上传所有分段产物至存储后端
+	var segments []models.FlashSegment
+	var primaryKey string
+	var totalSize int64
+
+	for _, seg := range rawSegs {
+		storageKey := fmt.Sprintf("builds/%s/%s", buildID, seg.filename)
+		uploadedSize, err := s.uploadBin(ctx, seg.absPath, storageKey)
+		if err != nil {
+			return nil, "", 0, fmt.Errorf("存储分段 %s 失败: %w", seg.filename, err)
+		}
+		totalSize += uploadedSize
+		segURL := fmt.Sprintf("/api/v1/builds/%s/artifacts/%s", buildID, seg.filename)
+		segments = append(segments, models.FlashSegment{
+			Offset: seg.offset,
+			Name:   seg.filename,
+			Size:   uploadedSize,
+			URL:    segURL,
+		})
+
+		// 选择作为主固件的存储 Key（用于 /download 兼容）：优先选择偏移 0x10000 的 app 或 0x0 的 merged
+		if primaryKey == "" || seg.offset == 0x10000 || (seg.offset == 0 && strings.Contains(seg.filename, "merged")) {
+			primaryKey = storageKey
+		}
+	}
+
+	if primaryKey == "" && len(segments) > 0 {
+		primaryKey = fmt.Sprintf("builds/%s/%s", buildID, segments[0].Name)
+	}
+
+	return segments, primaryKey, totalSize, nil
 }
 
 // uploadBin 将编译产物上传到存储后端，返回文件大小（字节）。

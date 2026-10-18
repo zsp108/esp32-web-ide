@@ -11,7 +11,7 @@ import {
   ShieldCheck, ShieldAlert, ShieldX, RefreshCw
 } from 'lucide-react'
 import { projectsApi, filesApi, buildsApi, boardsApi } from '../api/client'
-import { useWebSerial } from '../hooks/useWebSerial'
+import { useWebSerial, FlashSegment } from '../hooks/useWebSerial'
 import { useWebSocket, WSMessage } from '../hooks/useWebSocket'
 import clsx from 'clsx'
 
@@ -586,7 +586,20 @@ export default function EditorPage() {
   }
 
   const handleFlash = async () => {
-    if (!binUrl) {
+    // 解析分段清单
+    let segments: FlashSegment[] | undefined
+    if (latestBuild?.segments && Array.isArray(latestBuild.segments) && latestBuild.segments.length > 0) {
+      segments = latestBuild.segments
+    } else if (latestBuild?.flash_segments) {
+      try {
+        const parsed = JSON.parse(latestBuild.flash_segments)
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          segments = parsed
+        }
+      } catch {}
+    }
+
+    if (!binUrl && (!segments || segments.length === 0)) {
       alert('请先编译项目生成固件后再执行刷写！')
       return
     }
@@ -606,7 +619,7 @@ export default function EditorPage() {
         })
       }
       await flashFirmware(
-        binUrl,
+        segments && segments.length > 0 ? segments : (binUrl || ''),
         undefined,
         (msg) => {
           let level: 'info' | 'warning' | 'error' = 'info'
@@ -1785,6 +1798,14 @@ function BuildPanel({
                 <span>固件大小:</span>
                 <span className="text-gray-200 font-mono">
                   {(latestBuild.bin_size_bytes / 1024).toFixed(1)} KB
+                </span>
+              </div>
+            ) : null}
+            {latestBuild?.segments && latestBuild.segments.length > 1 ? (
+              <div className="flex justify-between text-xs text-gray-400">
+                <span>固件架构:</span>
+                <span className="text-teal-400 font-mono text-[11px]" title={latestBuild.segments.map((s: any) => `0x${s.offset.toString(16).toUpperCase()}: ${s.name} (${Math.round((s.size || 0)/1024)}KB)`).join('\n')}>
+                  多段布局 ({latestBuild.segments.length} 个分段)
                 </span>
               </div>
             ) : null}

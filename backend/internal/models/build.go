@@ -20,6 +20,14 @@ const (
 	BuildStatusCancelled BuildStatus = "cancelled"
 )
 
+// FlashSegment 描述单段固件烧录参数
+type FlashSegment struct {
+	Offset int64  `json:"offset"`
+	Name   string `json:"name"`
+	Size   int64  `json:"size"`
+	URL    string `json:"url"`
+}
+
 // BuildRecord 记录单次编译任务的完整信息。
 type BuildRecord struct {
 	ID            uuid.UUID   `gorm:"type:uuid;primaryKey" json:"id"`
@@ -28,10 +36,11 @@ type BuildRecord struct {
 	Framework     string      `json:"framework"` // arduino | espidf
 	BoardFQBN     string      `json:"board_fqbn"`
 	CustomCommand string      `json:"custom_command,omitempty"` // 自定义编译命令
-	BinStorageKey string      `json:"bin_storage_key"` // 存储后端中的对象键
+	BinStorageKey string      `json:"bin_storage_key"`          // 存储后端中的对象键
 	BinSizeBytes  int64       `json:"bin_size_bytes"`
-	FlashPct      float64     `json:"flash_pct"` // Flash 使用百分比
-	RAMPct        float64     `json:"ram_pct"`   // RAM 使用百分比
+	FlashSegments string      `gorm:"type:text" json:"flash_segments,omitempty"` // JSON 格式存储的分段烧录清单
+	FlashPct      float64     `json:"flash_pct"`                                 // Flash 使用百分比
+	RAMPct        float64     `json:"ram_pct"`                                   // RAM 使用百分比
 	BuildLog      string      `gorm:"type:text" json:"build_log"`
 	DurationMs    int64       `json:"duration_ms"`
 	ErrorMsg      string      `json:"error_msg,omitempty"`
