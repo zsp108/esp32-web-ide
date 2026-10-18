@@ -32,7 +32,7 @@ export default function EditorPage() {
   const [fileContent, setFileContent] = useState<string>('')
   const [rightPanel, setRightPanel] = useState<RightPanel>('build')
   const [buildId, setBuildId] = useState<string | null>(null)
-  const [buildStatus, setBuildStatus] = useState<'idle' | 'building' | 'success' | 'failed'>('idle')
+  const [buildStatus, setBuildStatus] = useState<'idle' | 'building' | 'success' | 'failed' | 'cancelled'>('idle')
   const [buildProgress, setBuildProgress] = useState(0)
   const [buildStage, setBuildStage] = useState<string>('')
   const [logs, setLogs] = useState<LogEntry[]>([])
@@ -103,9 +103,17 @@ export default function EditorPage() {
             return { level, text: line }
           }))
         }
-      } else if (latest.status === 'failed' || latest.status === 'timeout' || latest.status === 'cancelled') {
+      } else if (latest.status === 'cancelled') {
+        setBuildStatus('cancelled')
+        setBuildProgress(0)
+        setBuildStage(latest.error_msg || '编译任务已中止')
+        if (logs.length === 0 && latest.build_log) {
+          const lines = latest.build_log.split('\n').filter(Boolean)
+          setLogs(lines.map((line: string) => ({ level: 'warning', text: line })))
+        }
+      } else if (latest.status === 'failed' || latest.status === 'timeout') {
         setBuildStatus('failed')
-        setBuildStage(latest.error_msg || (latest.status === 'cancelled' ? '编译任务已中止' : '编译失败'))
+        setBuildStage(latest.error_msg || '编译失败')
         if (logs.length === 0 && latest.build_log) {
           const lines = latest.build_log.split('\n').filter(Boolean)
           setLogs(lines.map((line: string) => {
@@ -133,7 +141,7 @@ export default function EditorPage() {
       if (msg.stage) setBuildStage(msg.stage)
     } else if (msg.type === 'done') {
       if (msg.status === 'cancelled') {
-        setBuildStatus('failed')
+        setBuildStatus('cancelled')
         setBuildProgress(0)
         setBuildStage('编译任务已中止')
         if (msg.error) appendLog({ level: 'warning', text: `[WARN] ${msg.error}` })
@@ -193,7 +201,7 @@ export default function EditorPage() {
     if (!buildId) return
     try {
       await buildsApi.cancel(buildId)
-      setBuildStatus('failed')
+      setBuildStatus('cancelled')
       setBuildProgress(0)
       setBuildStage('编译任务已中止')
       appendLog({ level: 'warning', text: '[WARN] 用户已手动中止当前编译任务' })
@@ -256,6 +264,8 @@ export default function EditorPage() {
         <span className="w-2 h-2 rounded-full bg-green-400" />
       ) : buildStatus === 'failed' ? (
         <span className="w-2 h-2 rounded-full bg-red-400" />
+      ) : buildStatus === 'cancelled' ? (
+        <span className="w-2 h-2 rounded-full bg-amber-400" />
       ) : null,
     },
     {
@@ -590,7 +600,7 @@ function BuildPanel({
   framework,
   latestBuild,
 }: {
-  status: 'idle' | 'building' | 'success' | 'failed'
+  status: 'idle' | 'building' | 'success' | 'failed' | 'cancelled'
   progress: number
   stage: string
   onBuild: () => void
@@ -719,6 +729,26 @@ function BuildPanel({
         </div>
       )}
 
+      {status === 'cancelled' && (
+        <div className="bg-amber-950/30 border border-amber-500/40 rounded-lg p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-amber-400">
+              <Square size={14} className="fill-current" />
+              <span className="text-xs font-semibold uppercase tracking-wider">编译任务已中止</span>
+            </div>
+          </div>
+          <p className="text-xs text-amber-300/80 bg-amber-950/40 p-2 rounded font-mono text-[11px]">
+            {latestBuild?.error_msg || stage || '当前任务已被手动中止，可随时重新发起编译'}
+          </p>
+          <button
+            onClick={onViewLogs}
+            className="w-full flex items-center justify-center gap-1 text-xs text-amber-300 hover:text-amber-200 bg-amber-900/30 hover:bg-amber-900/50 py-1.5 rounded transition-colors"
+          >
+            查看历史日志 →
+          </button>
+        </div>
+      )}
+
       {/* 2. 当前编译任务详细信息 */}
       {buildId && (
         <div className="bg-dark-800 rounded-lg p-3 border border-dark-600 space-y-2">
@@ -814,7 +844,7 @@ function BuildPanel({
               className="w-full flex items-center justify-center gap-2 bg-green-700 hover:bg-green-600 text-white text-sm py-2 rounded-md font-medium transition-colors"
             >
               <Play size={14} />
-              {status === 'success' || status === 'failed' ? '重新编译' : '开始编译'}
+              {status === 'success' || status === 'failed' || status === 'cancelled' ? '重新编译' : '开始编译'}
             </button>
           )}
         </div>

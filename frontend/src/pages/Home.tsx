@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Cpu, Folder, ChevronRight, Loader2, AlertCircle, GitBranch, CheckCircle2, XCircle } from 'lucide-react'
+import { Plus, Cpu, Folder, ChevronRight, Loader2, AlertCircle, GitBranch, CheckCircle2, XCircle, Square } from 'lucide-react'
 import { projectsApi, boardsApi, importApi } from '../api/client'
 
 interface Board {
@@ -14,7 +14,7 @@ interface Board {
 
 interface LatestBuild {
   id: string
-  status: 'pending' | 'running' | 'success' | 'failed' | 'timeout'
+  status: 'pending' | 'running' | 'success' | 'failed' | 'timeout' | 'cancelled'
   duration_ms?: number
   created_at?: string
   board_fqbn?: string
@@ -173,6 +173,11 @@ export default function HomePage() {
                         <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-green-500/20 text-green-400 border border-green-500/30">
                           <CheckCircle2 size={11} />
                           编译就绪
+                        </span>
+                      ) : p.latest_build.status === 'cancelled' ? (
+                        <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                          <Square size={10} className="fill-current" />
+                          已中止
                         </span>
                       ) : p.latest_build.status === 'failed' || p.latest_build.status === 'timeout' ? (
                         <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-red-500/20 text-red-400 border border-red-500/30">
