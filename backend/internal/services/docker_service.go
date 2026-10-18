@@ -32,6 +32,7 @@ func NewDockerService(logger *zap.Logger) (*DockerService, error) {
 // BuildOptions 描述单次编译任务的容器配置。
 type BuildOptions struct {
 	Image          string            // Docker 镜像名称
+	Entrypoint     []string          // 容器入口点
 	Cmd            []string          // 容器启动命令
 	Env            []string          // 环境变量 KEY=VALUE
 	Binds          []string          // 卷挂载 "host:container"
@@ -41,7 +42,7 @@ type BuildOptions struct {
 }
 
 // RunBuild 在 Docker 容器中执行编译任务：
-//  1. 创建容器（Memory=1GB, NanoCPUs=1CPU, PidsLimit=100）
+//  1. 创建容器（Memory=2GB, NanoCPUs=2CPU, PidsLimit=1000）
 //  2. 启动容器并流式读取日志
 //  3. 等待容器退出或超时
 //  4. 超时时强制 Kill + Remove 容器
@@ -49,16 +50,22 @@ type BuildOptions struct {
 // 返回容器退出码非 0 时的错误。
 func (d *DockerService) RunBuild(ctx context.Context, opts BuildOptions) error {
 	const (
-		memoryLimit = 1 * 1024 * 1024 * 1024 // 1 GB
-		nanoCPUs    = 1 * 1e9                 // 1 CPU
+		memoryLimit = 2 * 1024 * 1024 * 1024 // 2 GB
+		nanoCPUs    = 2 * 1e9                 // 2 CPUs
 	)
-	pidsLimit := int64(100)
+	pidsLimit := int64(1000)
+
+	entrypoint := opts.Entrypoint
+	if len(entrypoint) == 0 {
+		entrypoint = []string{"/compile.sh"}
+	}
 
 	containerConfig := &container.Config{
-		Image: opts.Image,
-		Cmd:   opts.Cmd,
-		Env:   opts.Env,
-		Tty:   true,
+		Image:      opts.Image,
+		Entrypoint: entrypoint,
+		Cmd:        opts.Cmd,
+		Env:        opts.Env,
+		Tty:        true,
 	}
 
 	hostConfig := &container.HostConfig{

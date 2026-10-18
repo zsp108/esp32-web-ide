@@ -33,7 +33,7 @@ var supportedBoards = []Board{
 	},
 	{
 		ID:        "esp32:esp32:esp32s3",
-		FQBN:      "esp32:esp32:esp32s3",
+		FQBN:      "esp32:esp32:esp32s3:CDCOnBoot=cdc",
 		Name:      "ESP32-S3 DevKit",
 		Chip:      "ESP32-S3",
 		Framework: []string{"arduino", "espidf"},
@@ -42,7 +42,7 @@ var supportedBoards = []Board{
 	},
 	{
 		ID:        "esp32:esp32:esp32s3_n16r8",
-		FQBN:      "esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi",
+		FQBN:      "esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,CDCOnBoot=cdc",
 		Name:      "ESP32-S3 N16R8 (16MB Flash / 8MB OPI PSRAM)",
 		Chip:      "ESP32-S3",
 		Framework: []string{"arduino", "espidf"},

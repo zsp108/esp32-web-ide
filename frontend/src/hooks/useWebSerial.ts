@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import { ESPLoader, Transport, classicReset } from 'esptool-js'
+import { ESPLoader, Transport, classicReset, usbJTAGSerialReset } from 'esptool-js'
 import axios from 'axios'
 
 export interface DeviceInfo {
@@ -203,6 +203,11 @@ export function useWebSerial() {
       onLog?.('固件数据写入 100% 完成！正在执行硬件复位重启 ESP32...')
 
       try {
+        if (activeTransport) {
+          await usbJTAGSerialReset(activeTransport)
+        }
+      } catch {}
+      try {
         await activeLoader.hardReset()
       } catch {}
       try {
@@ -218,8 +223,8 @@ export function useWebSerial() {
 
       setDevice(null)
       setFlashSuccess(true)
-      setFlashStage('固件刷写成功！ESP32 设备已重启运行')
-      onLog?.('🎉 固件刷写成功！ESP32 设备已重启，屏幕将显示新程序界面！')
+      setFlashStage('固件刷写成功！若未自动亮屏请按 RST 键')
+      onLog?.('🎉 固件刷写成功！若开发板屏幕未亮起，请轻按板上的 RST / EN 键复位启动。')
     } catch (e: unknown) {
       const err = e as Error
       const msg = err.message || '刷写固件失败'

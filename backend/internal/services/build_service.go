@@ -367,6 +367,9 @@ func resolveBoardParams(boardFQBN string) (idfTarget, flashSize string) {
 	default:
 		lower := strings.ToLower(boardFQBN)
 		if strings.Contains(lower, "esp32s3") {
+			if strings.Contains(lower, "16m") {
+				return "esp32s3", "16MB"
+			}
 			return "esp32s3", "8MB"
 		} else if strings.Contains(lower, "esp32s2") {
 			return "esp32s2", "4MB"
