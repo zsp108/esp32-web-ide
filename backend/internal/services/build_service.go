@@ -347,7 +347,12 @@ func resolveBinPath(srcDir, outputDir, framework string) string {
 
 	if entries, err := os.ReadDir(outputDir); err == nil {
 		for _, e := range entries {
-			if !e.IsDir() && strings.HasSuffix(e.Name(), ".bin") {
+			if !e.IsDir() && (strings.HasSuffix(e.Name(), ".merged.bin") || strings.Contains(e.Name(), "merged")) {
+				return filepath.Join(outputDir, e.Name())
+			}
+		}
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".bin") && !strings.HasSuffix(e.Name(), ".bootloader.bin") && !strings.HasSuffix(e.Name(), ".partitions.bin") {
 				return filepath.Join(outputDir, e.Name())
 			}
 		}

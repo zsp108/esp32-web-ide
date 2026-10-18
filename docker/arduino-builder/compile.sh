@@ -1,13 +1,29 @@
 #!/bin/bash
 set -e
 
-echo "[Arduino Builder] Starting compilation..."
-echo "[Arduino Builder] Board: $BOARD_FQBN"
-echo "[Arduino Builder] Project dir: ${PROJECT_DIR:-/src}"
-echo "[Arduino Builder] Output dir: ${OUTPUT_DIR:-/output}"
-
 SRC_DIR="${PROJECT_DIR:-/src}"
 OUT_DIR="${OUTPUT_DIR:-/output}"
+
+# 如果 SRC_DIR 中有 .ino 文件，但目录名与 .ino 不一致（例如 /src/test.ino），
+# Arduino CLI 要求目录名必须与主 .ino 保持一致：
+FIRST_INO=$(find "$SRC_DIR" -maxdepth 2 -name "*.ino" 2>/dev/null | head -n 1)
+if [ -n "$FIRST_INO" ]; then
+    INO_NAME=$(basename "$FIRST_INO" .ino)
+    DIR_NAME=$(basename "$(dirname "$FIRST_INO")")
+    if [ "$INO_NAME" != "$DIR_NAME" ]; then
+        SKETCH_DIR="/tmp/sketch/$INO_NAME"
+        mkdir -p "$SKETCH_DIR"
+        cp -a "$SRC_DIR/." "$SKETCH_DIR/"
+        SRC_DIR="$SKETCH_DIR"
+    else
+        SRC_DIR="$(dirname "$FIRST_INO")"
+    fi
+fi
+
+echo "[Arduino Builder] Starting compilation..."
+echo "[Arduino Builder] Board: $BOARD_FQBN"
+echo "[Arduino Builder] Project dir: $SRC_DIR"
+echo "[Arduino Builder] Output dir: $OUT_DIR"
 
 arduino-cli compile \
     --fqbn "$BOARD_FQBN" \
