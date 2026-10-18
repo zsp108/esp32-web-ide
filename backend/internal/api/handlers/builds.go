@@ -154,6 +154,19 @@ func (h *BuildsHandler) Get(c *gin.Context) {
 		return
 	}
 
+	timeout := time.Duration(h.cfg.BuildTimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+	if (build.Status == models.BuildStatusRunning || build.Status == models.BuildStatusPending) && time.Since(build.CreatedAt) > timeout+30*time.Second {
+		build.Status = models.BuildStatusFailed
+		build.ErrorMsg = "编译超时或服务异常中断"
+		h.db.DB.Model(&build).Updates(map[string]interface{}{
+			"status":    models.BuildStatusFailed,
+			"error_msg": "编译超时或服务异常中断",
+		})
+	}
+
 	progress := 0
 	stage := ""
 	if build.Status == models.BuildStatusRunning {
@@ -168,6 +181,8 @@ func (h *BuildsHandler) Get(c *gin.Context) {
 	} else if build.Status == models.BuildStatusSuccess {
 		progress = 100
 		stage = "编译成功"
+	} else if build.Status == models.BuildStatusFailed || build.Status == models.BuildStatusTimeout {
+		stage = build.ErrorMsg
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -291,7 +306,54 @@ func (h *BuildsHandler) ListByProject(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, builds)
+	timeout := time.Duration(h.cfg.BuildTimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+
+	type BuildItem struct {
+		models.BuildRecord
+		Progress int    `json:"progress"`
+		Stage    string `json:"stage"`
+	}
+
+	result := make([]BuildItem, len(builds))
+	for i, b := range builds {
+		if (b.Status == models.BuildStatusRunning || b.Status == models.BuildStatusPending) && time.Since(b.CreatedAt) > timeout+30*time.Second {
+			b.Status = models.BuildStatusFailed
+			b.ErrorMsg = "编译超时或服务异常中断"
+			h.db.DB.Model(&models.BuildRecord{}).Where("id = ?", b.ID).Updates(map[string]interface{}{
+				"status":    models.BuildStatusFailed,
+				"error_msg": "编译超时或服务异常中断",
+			})
+		}
+
+		progress := 0
+		stage := ""
+		if b.Status == models.BuildStatusRunning {
+			p, _ := h.redisClient.Get(c.Request.Context(), "build:"+b.ID.String()+":progress").Int()
+			s, _ := h.redisClient.Get(c.Request.Context(), "build:"+b.ID.String()+":stage").Result()
+			progress = p
+			stage = s
+			if progress == 0 {
+				progress = 10
+				stage = "正在后台编译中..."
+			}
+		} else if b.Status == models.BuildStatusSuccess {
+			progress = 100
+			stage = "编译成功"
+		} else if b.Status == models.BuildStatusFailed || b.Status == models.BuildStatusTimeout {
+			stage = b.ErrorMsg
+		}
+
+		result[i] = BuildItem{
+			BuildRecord: b,
+			Progress:    progress,
+			Stage:       stage,
+		}
+	}
+
+	c.JSON(http.StatusOK, result)
 }
 
 // redisAddrFromURL 从 redis:// URL 提取 host:port。

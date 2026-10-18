@@ -16,6 +16,7 @@ import (
 	"github.com/esp32-web-ide/backend/internal/api"
 	"github.com/esp32-web-ide/backend/internal/config"
 	"github.com/esp32-web-ide/backend/internal/db"
+	"github.com/esp32-web-ide/backend/internal/models"
 	"github.com/esp32-web-ide/backend/internal/services"
 	"github.com/esp32-web-ide/backend/internal/worker"
 )
@@ -49,6 +50,17 @@ func main() {
 	storage, err := services.NewStorage(cfg, logger)
 	if err != nil {
 		logger.Fatal("初始化存储后端失败", zap.Error(err))
+	}
+
+	// 启动时清理历史残留的僵尸任务（例如服务重启导致一直处于 running 状态的任务）
+	if err := database.DB.Model(&models.BuildRecord{}).
+		Where("status IN ?", []models.BuildStatus{models.BuildStatusRunning, models.BuildStatusPending}).
+		Where("created_at < ?", time.Now().Add(-5*time.Minute)).
+		Updates(map[string]interface{}{
+			"status":    models.BuildStatusFailed,
+			"error_msg": "服务重启或编译超时中断",
+		}).Error; err != nil {
+		logger.Warn("清理残留僵尸任务失败", zap.Error(err))
 	}
 
 	switch *mode {

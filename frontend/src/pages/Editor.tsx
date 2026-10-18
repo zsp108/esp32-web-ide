@@ -85,6 +85,8 @@ export default function EditorPage() {
         setBuildStage(latest.stage || (latest.status === 'pending' ? '等待编译队列调度...' : '后台编译进行中...'))
         if (typeof latest.progress === 'number' && latest.progress > 0) {
           setBuildProgress(latest.progress)
+        } else {
+          setBuildProgress(10)
         }
       } else if (latest.status === 'success') {
         setBuildStatus('success')
@@ -736,14 +738,34 @@ function BuildPanel({
           </select>
         </div>
 
-        <button
-          onClick={onBuild}
-          disabled={status === 'building'}
-          className="w-full flex items-center justify-center gap-2 bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white text-sm py-2 rounded-md font-medium transition-colors"
-        >
-          {status === 'building' ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-          {status === 'building' ? '后台编译中...' : status === 'success' || status === 'failed' ? '重新编译' : '开始编译'}
-        </button>
+        <div>
+          {status === 'building' ? (
+            <div className="flex gap-2">
+              <button
+                disabled
+                className="flex-1 flex items-center justify-center gap-2 bg-blue-900/60 text-blue-200 text-xs py-2 rounded-md font-medium cursor-not-allowed"
+              >
+                <Loader2 size={13} className="animate-spin" />
+                后台编译中 ({Math.max(progress, 10)}%)
+              </button>
+              <button
+                onClick={onBuild}
+                title="若任务无响应，可重新发起编译"
+                className="px-3 py-2 bg-dark-700 hover:bg-dark-600 text-gray-300 hover:text-white text-xs rounded-md border border-dark-500 transition-colors shrink-0"
+              >
+                重新发起
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={onBuild}
+              className="w-full flex items-center justify-center gap-2 bg-green-700 hover:bg-green-600 text-white text-sm py-2 rounded-md font-medium transition-colors"
+            >
+              <Play size={14} />
+              {status === 'success' || status === 'failed' ? '重新编译' : '开始编译'}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   )

@@ -183,10 +183,20 @@ func (h *ProjectsHandler) ListBySession(c *gin.Context) {
 	}
 
 	resp := make([]ProjectResponse, len(projects))
+	timeout := 5 * time.Minute
+
 	for i, p := range projects {
 		resp[i].Project = p
 		var latest models.BuildRecord
 		if err := h.db.DB.Where("project_id = ?", p.ID).Order("created_at DESC").First(&latest).Error; err == nil {
+			if (latest.Status == models.BuildStatusRunning || latest.Status == models.BuildStatusPending) && time.Since(latest.CreatedAt) > timeout+30*time.Second {
+				latest.Status = models.BuildStatusFailed
+				latest.ErrorMsg = "编译超时或服务异常中断"
+				h.db.DB.Model(&latest).Updates(map[string]interface{}{
+					"status":    models.BuildStatusFailed,
+					"error_msg": "编译超时或服务异常中断",
+				})
+			}
 			resp[i].LatestBuild = &latest
 		}
 	}
