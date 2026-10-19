@@ -93,10 +93,15 @@ func (h *ImportHandler) ImportFromGit(c *gin.Context) {
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		h.logger.Error("git clone 失败", zap.Error(err), zap.String("output", string(output)))
+		outStr := strings.TrimSpace(string(output))
+		errMsg := outStr
+		if errMsg == "" {
+			errMsg = err.Error()
+		}
+		h.logger.Error("git clone 失败", zap.Error(err), zap.String("output", outStr))
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "git clone failed",
-			"details": string(output),
+			"error":   "git clone 失败: " + errMsg,
+			"details": errMsg,
 		})
 		return
 	}

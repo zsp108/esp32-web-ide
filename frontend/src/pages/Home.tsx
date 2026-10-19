@@ -97,7 +97,11 @@ export default function HomePage() {
       }
     },
     onError: (err: any) => {
-      const msg = err.response?.data?.details || err.response?.data?.error || '导入失败，请检查仓库地址与网络连接'
+      const data = err.response?.data
+      let msg = data?.error || data?.details || err.message || '导入失败，请检查仓库地址与网络连接'
+      if (data?.details && data?.error && !data.error.includes(data.details)) {
+        msg = `${data.error}: ${data.details}`
+      }
       setImportError(msg)
     },
   })
@@ -471,9 +475,9 @@ export default function HomePage() {
               </div>
 
               {importMutation.isError && (
-                <div className="flex items-start gap-2 text-red-400 text-sm bg-red-900/20 border border-red-800/40 rounded-md px-3 py-2">
-                  <AlertCircle size={16} className="shrink-0 mt-0.5" />
-                  <span className="break-all">{importError || '导入失败，请重试'}</span>
+                <div className="flex items-start gap-2 text-red-400 text-xs bg-red-900/20 border border-red-800/40 rounded-md px-3 py-2 max-h-48 overflow-y-auto">
+                  <AlertCircle size={16} className="shrink-0 mt-0.5 text-red-400" />
+                  <span className="break-all whitespace-pre-wrap font-mono">{importError || '导入失败，请重试'}</span>
                 </div>
               )}
 
