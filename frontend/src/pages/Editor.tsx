@@ -199,6 +199,7 @@ export default function EditorPage() {
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({})
   const [buildMode, setBuildMode] = useState<'auto' | 'custom'>('auto')
   const [customCommand, setCustomCommand] = useState<string>('')
+  const [selectedFramework, setSelectedFramework] = useState<string>('')
 
   const { data: projectFiles = [], refetch: refetchFiles } = useQuery<{ id: string; path: string; size_bytes: number }[]>({
     queryKey: ['files', projectId],
@@ -277,6 +278,13 @@ export default function EditorPage() {
     }
   }, [project?.custom_command])
 
+  // 当项目信息加载后，初始化当前选中的编译框架
+  useEffect(() => {
+    if (project?.framework && !selectedFramework) {
+      setSelectedFramework(project.framework)
+    }
+  }, [project?.framework])
+
   const { data: boards = [] } = useQuery({
     queryKey: ['boards'],
     queryFn: boardsApi.list,
@@ -296,6 +304,7 @@ export default function EditorPage() {
 
   const latestBuild = projectBuilds?.[0]
   const currentBoard = selectedBoard || latestBuild?.board_fqbn || project?.board_fqbn || 'esp32:esp32:esp32'
+  const currentFramework = selectedFramework || latestBuild?.framework || project?.framework || 'arduino'
 
   // 设备与项目匹配度检测评估
   const compatibility: CompatibilityReport = useMemo(() => {
@@ -529,7 +538,7 @@ export default function EditorPage() {
   const buildMutation = useMutation({
     mutationFn: () => buildsApi.create({
       project_id: projectId!,
-      framework: project?.framework ?? 'arduino',
+      framework: currentFramework,
       board: currentBoard,
       board_fqbn: currentBoard,
       custom_cmd: buildMode === 'custom' ? customCommand.trim() : '',
@@ -964,7 +973,7 @@ export default function EditorPage() {
           {project && (
             <div className="flex items-center gap-2 ml-2">
               <span className="text-xs text-gray-400 bg-dark-700 px-2 py-0.5 rounded font-mono uppercase">
-                {project.framework}
+                {currentFramework}
               </span>
               <select
                 value={currentBoard}
@@ -1275,7 +1284,8 @@ export default function EditorPage() {
                 currentBoard={currentBoard}
                 onSelectBoard={setSelectedBoard}
                 onViewLogs={() => setRightPanel('buildLogs')}
-                framework={project?.framework}
+                framework={currentFramework}
+                onSelectFramework={setSelectedFramework}
                 latestBuild={latestBuild}
                 flashing={flashing}
                 flashProgress={flashProgress}
@@ -1689,6 +1699,7 @@ function BuildPanel({
   onSelectBoard,
   onViewLogs,
   framework,
+  onSelectFramework,
   latestBuild,
   flashing,
   flashProgress,
@@ -1710,6 +1721,7 @@ function BuildPanel({
   onSelectBoard: (board: string) => void
   onViewLogs: () => void
   framework?: string
+  onSelectFramework: (framework: string) => void
   latestBuild?: any
   flashing?: boolean
   flashProgress?: number
@@ -1926,6 +1938,25 @@ function BuildPanel({
       {/* 3. 编译设置与触发按钮 */}
       <div className="bg-dark-800 rounded-lg p-3 border border-dark-600 space-y-3">
         <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">编译设置</h4>
+
+        {/* 编译框架选择 */}
+        <div>
+          <label className="block text-xs text-gray-400 mb-1.5 font-medium flex items-center justify-between">
+            <span>编译框架</span>
+            <span className="text-[10px] text-gray-400 font-normal">
+              {(framework || 'arduino') === 'espidf' ? '使用 ESP-IDF 构建环境' : '使用 Arduino 构建环境'}
+            </span>
+          </label>
+          <select
+            value={framework || 'arduino'}
+            onChange={e => onSelectFramework(e.target.value)}
+            disabled={status === 'building'}
+            className="w-full bg-dark-900 border border-dark-500 rounded-md px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-blue-500 disabled:opacity-50"
+          >
+            <option value="arduino">Arduino 框架 (arduino-cli)</option>
+            <option value="espidf">ESP-IDF 官方框架 (idf.py)</option>
+          </select>
+        </div>
 
         {/* 开发板选择 */}
         <div>

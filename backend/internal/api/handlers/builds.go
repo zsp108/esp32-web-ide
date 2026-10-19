@@ -101,6 +101,11 @@ func (h *BuildsHandler) Create(c *gin.Context) {
 		h.db.DB.Model(&project).Update("board_fqbn", boardFQBN)
 	}
 
+	// 若用户切换了编译框架，同步更新项目默认框架配置
+	if framework != project.Framework {
+		h.db.DB.Model(&project).Update("framework", framework)
+	}
+
 	// 更新或沿用项目的自定义命令
 	customCmd := strings.TrimSpace(req.CustomCommand)
 	if customCmd != project.CustomCommand {
