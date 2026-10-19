@@ -25,8 +25,12 @@ export const projectsApi = {
   create: (data: { name: string; framework: string; board_fqbn: string }) =>
     apiClient.post('/projects', data).then(r => r.data),
   get: (id: string) => apiClient.get(`/projects/${id}`).then(r => r.data),
+  update: (id: string, data: { name?: string; description?: string; framework?: string; board_fqbn?: string; custom_command?: string; git_url?: string; git_branch?: string; git_sub_dir?: string }) =>
+    apiClient.put(`/projects/${id}`, data).then(r => r.data),
   list: () => apiClient.get('/projects').then(r => r.data),
   delete: (id: string) => apiClient.delete(`/projects/${id}`).then(r => r.data),
+  gitPull: (id: string, data?: { git_url?: string; branch?: string; sub_dir?: string }) =>
+    apiClient.post(`/projects/${id}/git-pull`, data || {}).then(r => r.data),
 }
 
 export const filesApi = {

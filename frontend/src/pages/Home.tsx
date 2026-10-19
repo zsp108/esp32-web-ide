@@ -26,6 +26,9 @@ interface Project {
   framework: string
   board_fqbn: string
   created_at: string
+  git_url?: string
+  git_branch?: string
+  git_commit_hash?: string
   latest_build?: LatestBuild
 }
 
@@ -269,6 +272,13 @@ export default function HomePage() {
                           编译未通过
                         </span>
                       ) : null
+                    )}
+                    {p.git_url && (
+                      <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-purple-500/20 text-purple-300 border border-purple-500/30 shrink-0 font-mono" title={`关联仓库: ${p.git_url}`}>
+                        <GitBranch size={10} />
+                        {p.git_branch || 'main'}
+                        {p.git_commit_hash && ` #${p.git_commit_hash}`}
+                      </span>
                     )}
                   </div>
                   <div className="text-xs text-gray-500 mt-1 truncate">

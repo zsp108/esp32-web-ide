@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect, useLayoutEffect, useMemo } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import Editor from '@monaco-editor/react'
 import {
   Cpu, Wifi, WifiOff, Play, Download, Terminal,
@@ -8,7 +8,7 @@ import {
   FilePlus, Trash2, Settings, FileText, Code2, Pencil,
   Folder, FolderOpen, ChevronRight, ChevronDown, Database, Image, Search,
   FolderPlus, ChevronsUpDown, ChevronsDownUp, X, ArrowDown, Copy, Check,
-  ShieldCheck, ShieldAlert, ShieldX, RefreshCw
+  ShieldCheck, ShieldAlert, ShieldX, RefreshCw, GitBranch
 } from 'lucide-react'
 import { projectsApi, filesApi, buildsApi, boardsApi } from '../api/client'
 import { useWebSerial, FlashSegment } from '../hooks/useWebSerial'
@@ -200,6 +200,48 @@ export default function EditorPage() {
   const [buildMode, setBuildMode] = useState<'auto' | 'custom'>('auto')
   const [customCommand, setCustomCommand] = useState<string>('')
   const [selectedFramework, setSelectedFramework] = useState<string>('')
+  const queryClient = useQueryClient()
+  const [showGitSettings, setShowGitSettings] = useState(false)
+  const [gitUrlInput, setGitUrlInput] = useState('')
+  const [gitBranchInput, setGitBranchInput] = useState('')
+  const [gitSubDirInput, setGitSubDirInput] = useState('')
+  const [gitPullResult, setGitPullResult] = useState<{
+    message: string
+    commit_hash?: string
+    commit_msg?: string
+    branch?: string
+    updated_files?: number
+    created_files?: number
+    deleted_files?: number
+    total_files?: number
+  } | null>(null)
+
+  const updateProjectMutation = useMutation({
+    mutationFn: (data: any) => projectsApi.update(projectId!, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['project', projectId] })
+    },
+  })
+
+  const gitPullMutation = useMutation({
+    mutationFn: (data?: { git_url?: string; branch?: string; sub_dir?: string }) =>
+      projectsApi.gitPull(projectId!, data),
+    onSuccess: async (res) => {
+      await queryClient.invalidateQueries({ queryKey: ['project', projectId] })
+      await refetchFiles()
+      if (activeFile) {
+        try {
+          const updated = await filesApi.getContent(projectId!, activeFile)
+          setFileContent(typeof updated === 'string' ? updated : JSON.stringify(updated))
+        } catch {}
+      }
+      setGitPullResult(res)
+    },
+    onError: (err: any) => {
+      const msg = err.response?.data?.details || err.response?.data?.error || err.message || 'Git Pull 失败'
+      alert(`Git Pull 同步失败:\n${msg}`)
+    },
+  })
 
   const { data: projectFiles = [], refetch: refetchFiles } = useQuery<{ id: string; path: string; size_bytes: number }[]>({
     queryKey: ['files', projectId],
@@ -284,6 +326,15 @@ export default function EditorPage() {
       setSelectedFramework(project.framework)
     }
   }, [project?.framework])
+
+  // 当项目信息加载后，初始化 Git 仓库配置输入
+  useEffect(() => {
+    if (project) {
+      setGitUrlInput(project.git_url || '')
+      setGitBranchInput(project.git_branch || '')
+      setGitSubDirInput(project.git_sub_dir || '')
+    }
+  }, [project?.git_url, project?.git_branch, project?.git_sub_dir])
 
   const { data: boards = [] } = useQuery({
     queryKey: ['boards'],
@@ -995,6 +1046,50 @@ export default function EditorPage() {
                   )
                 })}
               </select>
+
+              {/* Git 状态与同步快捷组件 */}
+              {project?.git_url ? (
+                <div className="flex items-center gap-1.5 bg-dark-700/80 border border-dark-500 rounded px-2 py-1 text-xs text-gray-300">
+                  <GitBranch size={13} className="text-purple-400 shrink-0" />
+                  <span className="font-mono text-gray-200 truncate max-w-[120px]" title={`远程仓库: ${project.git_url}\n分支: ${project.git_branch || 'main'}`}>
+                    {project.git_branch || 'main'}
+                  </span>
+                  {project.git_commit_hash && (
+                    <span className="text-gray-400 font-mono text-[11px]" title={`最后同步 Commit: ${project.git_commit_hash}`}>
+                      #{project.git_commit_hash}
+                    </span>
+                  )}
+                  <button
+                    onClick={() => {
+                      if (window.confirm(`确定要从远程仓库拉取最新代码吗？\n仓库: ${project.git_url}\n分支: ${project.git_branch || 'main'}\n注意：这将从远程更新/覆盖项目文件。`)) {
+                        gitPullMutation.mutate()
+                      }
+                    }}
+                    disabled={gitPullMutation.isPending}
+                    className="flex items-center gap-1 ml-1 text-xs bg-purple-900/40 hover:bg-purple-800/60 text-purple-300 border border-purple-700/50 rounded px-2 py-0.5 transition-colors disabled:opacity-50"
+                    title="从远程仓库拉取最新代码并同步到 Web IDE (Git Pull)"
+                  >
+                    <RefreshCw size={11} className={clsx(gitPullMutation.isPending && "animate-spin")} />
+                    <span>{gitPullMutation.isPending ? '同步中...' : 'Git Pull'}</span>
+                  </button>
+                  <button
+                    onClick={() => setShowGitSettings(true)}
+                    className="p-1 text-gray-400 hover:text-white rounded hover:bg-dark-600 transition-colors ml-0.5"
+                    title="Git 仓库配置"
+                  >
+                    <Settings size={12} />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setShowGitSettings(true)}
+                  className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-purple-300 bg-dark-700/50 hover:bg-dark-700 border border-dark-600 hover:border-purple-800/50 rounded px-2.5 py-1 transition-colors"
+                  title="关联 Git 远程仓库以启用一键同步更新 (Git Pull)"
+                >
+                  <GitBranch size={13} />
+                  <span>绑定 Git</span>
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -1450,6 +1545,174 @@ export default function EditorPage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Git Settings Modal */}
+      {showGitSettings && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4">
+          <div className="bg-dark-800 border border-dark-600 rounded-xl shadow-2xl w-full max-w-lg p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-base font-semibold text-gray-100 flex items-center gap-2">
+                <GitBranch size={18} className="text-purple-400" />
+                <span>Git 远程仓库配置</span>
+              </h3>
+              <button
+                onClick={() => setShowGitSettings(false)}
+                className="text-gray-400 hover:text-white p-1 rounded"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault()
+                updateProjectMutation.mutate({
+                  git_url: gitUrlInput.trim(),
+                  git_branch: gitBranchInput.trim() || 'main',
+                  git_sub_dir: gitSubDirInput.trim(),
+                }, {
+                  onSuccess: () => setShowGitSettings(false)
+                })
+              }}
+              className="space-y-4"
+            >
+              <div>
+                <label className="block text-xs text-gray-400 mb-1.5 font-medium">Git 仓库地址 (HTTP / HTTPS)</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="https://github.com/user/repository.git"
+                  value={gitUrlInput}
+                  onChange={e => setGitUrlInput(e.target.value)}
+                  className="w-full bg-dark-900 border border-dark-500 rounded-md px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-purple-500 font-mono"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1.5 font-medium">分支名称 (默认 main)</label>
+                  <input
+                    type="text"
+                    placeholder="main 或 master"
+                    value={gitBranchInput}
+                    onChange={e => setGitBranchInput(e.target.value)}
+                    className="w-full bg-dark-900 border border-dark-500 rounded-md px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-purple-500 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1.5 font-medium">子目录 (可选)</label>
+                  <input
+                    type="text"
+                    placeholder="如: examples/blink"
+                    value={gitSubDirInput}
+                    onChange={e => setGitSubDirInput(e.target.value)}
+                    className="w-full bg-dark-900 border border-dark-500 rounded-md px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-purple-500 font-mono"
+                  />
+                </div>
+              </div>
+
+              {project?.git_commit_hash && (
+                <div className="bg-dark-900/60 border border-dark-700 rounded-lg p-3 text-xs text-gray-400 space-y-1">
+                  <div className="flex justify-between">
+                    <span>当前同步 Commit:</span>
+                    <span className="font-mono text-purple-300 font-semibold">{project.git_commit_hash}</span>
+                  </div>
+                  {project.updated_at && (
+                    <div className="flex justify-between">
+                      <span>上次更新时间:</span>
+                      <span>{new Date(project.updated_at).toLocaleString()}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="flex items-center justify-between pt-3 border-t border-dark-700">
+                <button
+                  type="button"
+                  onClick={() => setShowGitSettings(false)}
+                  className="px-4 py-2 text-xs text-gray-400 hover:text-gray-200 transition-colors"
+                >
+                  关闭
+                </button>
+                <div className="flex gap-2">
+                  <button
+                    type="submit"
+                    disabled={updateProjectMutation.isPending}
+                    className="bg-dark-700 hover:bg-dark-600 text-gray-200 text-xs px-4 py-2 rounded-md font-medium transition-colors"
+                  >
+                    保存配置
+                  </button>
+                  <button
+                    type="button"
+                    disabled={gitPullMutation.isPending || !gitUrlInput.trim()}
+                    onClick={() => {
+                      updateProjectMutation.mutate({
+                        git_url: gitUrlInput.trim(),
+                        git_branch: gitBranchInput.trim() || 'main',
+                        git_sub_dir: gitSubDirInput.trim(),
+                      }, {
+                        onSuccess: () => {
+                          setShowGitSettings(false)
+                          gitPullMutation.mutate({
+                            git_url: gitUrlInput.trim(),
+                            branch: gitBranchInput.trim() || 'main',
+                            sub_dir: gitSubDirInput.trim(),
+                          })
+                        }
+                      })
+                    }}
+                    className="bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white text-xs px-4 py-2 rounded-md font-medium transition-colors flex items-center gap-1.5"
+                  >
+                    <RefreshCw size={12} className={clsx(gitPullMutation.isPending && "animate-spin")} />
+                    <span>保存并同步 (Pull)</span>
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Git Pull Result Modal */}
+      {gitPullResult && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4">
+          <div className="bg-dark-800 border border-dark-600 rounded-xl shadow-2xl w-full max-w-md p-6">
+            <div className="flex items-center gap-2.5 mb-3 text-green-400">
+              <CheckCircle2 size={20} className="shrink-0" />
+              <h3 className="text-base font-semibold text-gray-100">代码同步成功</h3>
+            </div>
+
+            <div className="space-y-2.5 text-xs text-gray-300 bg-dark-900/60 border border-dark-700 rounded-lg p-3.5 mb-4">
+              <div className="flex justify-between border-b border-dark-700/60 pb-1.5">
+                <span className="text-gray-400">最新 Commit:</span>
+                <span className="font-mono text-purple-300 font-semibold">{gitPullResult.commit_hash || '最新'}</span>
+              </div>
+              {gitPullResult.commit_msg && (
+                <div className="border-b border-dark-700/60 pb-1.5">
+                  <span className="text-gray-400 block mb-0.5">提交说明:</span>
+                  <span className="font-mono text-gray-200">{gitPullResult.commit_msg}</span>
+                </div>
+              )}
+              <div className="flex justify-between">
+                <span className="text-gray-400">文件变动概览:</span>
+                <span className="text-gray-200">
+                  更新 {gitPullResult.updated_files ?? 0} 个 · 新增 {gitPullResult.created_files ?? 0} 个 · 移除 {gitPullResult.deleted_files ?? 0} 个
+                </span>
+              </div>
+            </div>
+
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => setGitPullResult(null)}
+                className="bg-blue-600 hover:bg-blue-500 text-white text-xs px-5 py-2 rounded-md font-medium transition-colors"
+              >
+                好的
+              </button>
+            </div>
           </div>
         </div>
       )}

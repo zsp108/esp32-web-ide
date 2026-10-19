@@ -2,9 +2,14 @@
 package handlers
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -245,4 +250,290 @@ func (h *ProjectsHandler) Delete(c *gin.Context) {
 	}
 
 	c.Status(http.StatusNoContent)
+}
+
+// updateProjectRequest 更新项目配置的请求体
+type updateProjectRequest struct {
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	Framework     string `json:"framework"`
+	BoardFQBN     string `json:"board_fqbn"`
+	CustomCommand string `json:"custom_command"`
+	GitURL        string `json:"git_url"`
+	GitBranch     string `json:"git_branch"`
+	GitSubDir     string `json:"git_sub_dir"`
+}
+
+// Update godoc
+// @Summary  更新项目基本信息及关联的 Git 仓库
+// @Tags     projects
+// @Accept   json
+// @Produce  json
+// @Param    id    path      string                true  "项目 UUID"
+// @Param    body  body      updateProjectRequest  true  "项目更新信息"
+// @Success  200   {object}  models.Project
+// @Router   /api/v1/projects/{id} [put]
+func (h *ProjectsHandler) Update(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的项目 ID"})
+		return
+	}
+
+	var req updateProjectRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var project models.Project
+	if err := h.db.DB.First(&project, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "项目不存在"})
+		return
+	}
+
+	updates := map[string]interface{}{
+		"updated_at": time.Now(),
+	}
+	if req.Name != "" {
+		updates["name"] = req.Name
+	}
+	if req.Description != "" {
+		updates["description"] = req.Description
+	}
+	if req.Framework != "" {
+		updates["framework"] = req.Framework
+	}
+	if req.BoardFQBN != "" {
+		updates["board_fqbn"] = req.BoardFQBN
+	}
+	if req.CustomCommand != "" {
+		updates["custom_command"] = req.CustomCommand
+	}
+	if req.GitURL != "" {
+		updates["git_url"] = req.GitURL
+	}
+	if req.GitBranch != "" {
+		updates["git_branch"] = req.GitBranch
+	}
+	if req.GitSubDir != "" {
+		updates["git_sub_dir"] = req.GitSubDir
+	}
+
+	if err := h.db.DB.Model(&project).Updates(updates).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新项目失败: " + err.Error()})
+		return
+	}
+
+	_ = h.db.DB.First(&project, "id = ?", id)
+	c.JSON(http.StatusOK, project)
+}
+
+// gitPullRequest Git Pull 请求体
+type gitPullRequest struct {
+	GitURL string `json:"git_url"`
+	Branch string `json:"branch"`
+	SubDir string `json:"sub_dir"`
+}
+
+// GitPull godoc
+// @Summary  从关联的 Git 仓库拉取最新代码并同步更新项目源码
+// @Tags     projects
+// @Accept   json
+// @Produce  json
+// @Param    id    path      string          true  "项目 UUID"
+// @Param    body  body      gitPullRequest  false "可选参数覆盖"
+// @Success  200   {object}  map[string]interface{}
+// @Router   /api/v1/projects/{id}/git-pull [post]
+func (h *ProjectsHandler) GitPull(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的项目 ID"})
+		return
+	}
+
+	var project models.Project
+	if err := h.db.DB.First(&project, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "项目不存在"})
+		return
+	}
+
+	var req gitPullRequest
+	_ = c.ShouldBindJSON(&req)
+
+	gitURL := project.GitURL
+	if req.GitURL != "" {
+		gitURL = req.GitURL
+	}
+	branch := project.GitBranch
+	if req.Branch != "" {
+		branch = req.Branch
+	}
+	subDir := project.GitSubDir
+	if req.SubDir != "" {
+		subDir = req.SubDir
+	}
+
+	if gitURL == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "该项目尚未关联远程 Git 仓库，请先在项目设置中配置 Git URL"})
+		return
+	}
+
+	tmpDir, err := os.MkdirTemp("", "git-pull-*")
+	if err != nil {
+		h.logger.Error("创建临时目录失败", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建临时拉取目录失败"})
+		return
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cloneDir := filepath.Join(tmpDir, "repo")
+	args := []string{"clone", "--recurse-submodules", "--depth=1"}
+	if branch != "" {
+		args = append(args, "--branch", branch)
+	}
+	args = append(args, gitURL, cloneDir)
+
+	cmd := exec.Command("git", args...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		outStr := strings.TrimSpace(string(output))
+		if outStr == "" {
+			outStr = err.Error()
+		}
+		h.logger.Error("git pull 失败", zap.Error(err), zap.String("output", outStr))
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Git Pull 失败: " + outStr,
+			"details": outStr,
+		})
+		return
+	}
+
+	projectRoot := cloneDir
+	if subDir != "" {
+		projectRoot = filepath.Join(cloneDir, subDir)
+	}
+	if fi, err := os.Stat(projectRoot); err != nil || !fi.IsDir() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "指定的子目录不存在或不是文件夹"})
+		return
+	}
+
+	// 提取 Commit Hash 和 Commit 信息
+	commitHash := ""
+	commitCmd := exec.Command("git", "-C", cloneDir, "rev-parse", "--short", "HEAD")
+	if out, err := commitCmd.Output(); err == nil {
+		commitHash = strings.TrimSpace(string(out))
+	}
+
+	commitMsg := ""
+	msgCmd := exec.Command("git", "-C", cloneDir, "log", "-1", "--pretty=%s")
+	if out, err := msgCmd.Output(); err == nil {
+		commitMsg = strings.TrimSpace(string(out))
+	}
+
+	if branch == "" {
+		branchCmd := exec.Command("git", "-C", cloneDir, "rev-parse", "--abbrev-ref", "HEAD")
+		if out, err := branchCmd.Output(); err == nil {
+			branch = strings.TrimSpace(string(out))
+		}
+	}
+
+	// 读取当前项目在数据库中的现有文件
+	var existingFiles []models.ProjectFile
+	h.db.DB.Find(&existingFiles, "project_id = ?", project.ID)
+	existingMap := make(map[string]models.ProjectFile)
+	for _, f := range existingFiles {
+		existingMap[f.Path] = f
+	}
+
+	newFilesMap := make(map[string]bool)
+	var updatedCount, createdCount int
+	now := time.Now()
+
+	// 遍历 Git 仓库文件同步至数据库
+	_ = filepath.Walk(projectRoot, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			base := filepath.Base(path)
+			if strings.HasPrefix(base, ".") || base == "build" || base == "node_modules" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if info.Size() > 50*1024*1024 || strings.HasPrefix(filepath.Base(path), ".") {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		relPath, _ := filepath.Rel(projectRoot, path)
+		cleanPath := filepath.ToSlash(relPath)
+		newFilesMap[cleanPath] = true
+
+		content := ""
+		if isBinaryData(data) {
+			content = "base64:" + base64.StdEncoding.EncodeToString(data)
+		} else {
+			content = string(data)
+		}
+
+		if existing, exists := existingMap[cleanPath]; exists {
+			if existing.Content != content || existing.SizeBytes != info.Size() {
+				h.db.DB.Model(&existing).Updates(map[string]interface{}{
+					"content":    content,
+					"size_bytes": info.Size(),
+					"updated_at": now,
+				})
+				updatedCount++
+			}
+		} else {
+			pf := models.ProjectFile{
+				ProjectID: project.ID,
+				Path:      cleanPath,
+				Content:   content,
+				SizeBytes: info.Size(),
+				CreatedAt: now,
+				UpdatedAt: now,
+			}
+			h.db.DB.Create(&pf)
+			createdCount++
+		}
+		return nil
+	})
+
+	// 清理远程已被删除的旧文件
+	var deletedCount int
+	for oldPath, oldFile := range existingMap {
+		if !newFilesMap[oldPath] {
+			h.db.DB.Delete(&oldFile)
+			deletedCount++
+		}
+	}
+
+	// 更新项目信息
+	h.db.DB.Model(&project).Updates(map[string]interface{}{
+		"git_url":         gitURL,
+		"git_branch":      branch,
+		"git_sub_dir":     subDir,
+		"git_commit_hash": commitHash,
+		"updated_at":      now,
+	})
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":       fmt.Sprintf("Git 同步成功 (更新 %d, 新增 %d, 移除 %d 个文件)", updatedCount, createdCount, deletedCount),
+		"commit_hash":   commitHash,
+		"commit_msg":    commitMsg,
+		"branch":        branch,
+		"git_url":       gitURL,
+		"updated_files": updatedCount,
+		"created_files": createdCount,
+		"deleted_files": deletedCount,
+		"total_files":   len(newFilesMap),
+	})
 }

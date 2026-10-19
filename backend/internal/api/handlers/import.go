@@ -128,16 +128,35 @@ func (h *ImportHandler) ImportFromGit(c *gin.Context) {
 		}
 	}
 
+	// Extract git branch and commit hash
+	commitHash := ""
+	commitCmd := exec.Command("git", "-C", cloneDir, "rev-parse", "--short", "HEAD")
+	if out, err := commitCmd.Output(); err == nil {
+		commitHash = strings.TrimSpace(string(out))
+	}
+
+	branch := req.Branch
+	if branch == "" {
+		branchCmd := exec.Command("git", "-C", cloneDir, "rev-parse", "--abbrev-ref", "HEAD")
+		if out, err := branchCmd.Output(); err == nil {
+			branch = strings.TrimSpace(string(out))
+		}
+	}
+
 	// Create the project record
 	project := models.Project{
-		ID:           uuid.New(),
-		Name:         name,
-		Description:  "Imported from " + req.GitURL,
-		Framework:    framework,
-		BoardFQBN:    req.BoardFQBN,
-		SessionToken: sessionToken,
-		CreatedAt:    time.Now(),
-		UpdatedAt:    time.Now(),
+		ID:            uuid.New(),
+		Name:          name,
+		Description:   "Imported from " + req.GitURL,
+		Framework:     framework,
+		BoardFQBN:     req.BoardFQBN,
+		SessionToken:  sessionToken,
+		GitURL:        req.GitURL,
+		GitBranch:     branch,
+		GitSubDir:     req.SubDir,
+		GitCommitHash: commitHash,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
 	}
 	if err := h.db.DB.Create(&project).Error; err != nil {
 		h.logger.Error("创建项目失败", zap.Error(err))

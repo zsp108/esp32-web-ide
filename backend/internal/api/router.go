@@ -57,7 +57,9 @@ func NewRouter(cfg *config.Config, database *db.Database, storage services.Stora
 			projects.POST("", projectsHandler.Create)
 			projects.GET("", projectsHandler.ListBySession)
 			projects.GET("/:id", projectsHandler.Get)
+			projects.PUT("/:id", projectsHandler.Update)
 			projects.DELETE("/:id", projectsHandler.Delete)
+			projects.POST("/:id/git-pull", projectsHandler.GitPull)
 
 			// 文件管理（挂载在项目下）
 			projects.PUT("/:id/files", filesHandler.UpsertFile)
