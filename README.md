@@ -97,7 +97,7 @@ esp32-web-ide/
 
 ## 🚀 部署与启动指南
 
-### 方式一：Docker Compose 一键部署（推荐生产/自建使用）
+### 方式一：Docker Compose 生产/自建部署
 
 #### 1. 克隆代码与配置环境变量
 ```bash
@@ -107,35 +107,59 @@ cp .env.example .env
 # 按需修改 .env 中的配置（如端口、Redis、PostgreSQL 密码等，默认已可开箱即用）
 ```
 
-#### 2. 构建并启动所有核心服务（全自动化，零宿主依赖）
-后端与前端均已配置 **Docker 多阶段构建（Multi-stage Build）**，宿主机**无需预装 Go 或 Node.js/npm**，Docker 会自动在隔离容器阶段完成 Go 二进制静态编译与 Vite 生产构建打包：
+#### 2. 构建并启动服务集群（提供两种构建途径）
+
+##### 途径 A：Docker 多阶段全自动构建（推荐，零宿主环境依赖）
+若宿主机**未安装 Go 或 Node.js**，可直接利用 Docker Multi-stage 特性在隔离容器内自动拉取依赖并编译：
 
 ```bash
-# 一键构建前端、后端镜像并后台启动服务集群
+# Docker 自动在容器内编译 Go 二进制与 Vite 静态前端，并后台启动集群
 docker compose up -d --build
 ```
 
-启动后包含以下容器集群：
-- `esp32-web-ide-frontend-1`: 前端页面托管 (Nginx 端口 80)
-- `esp32-web-ide-backend-1`: Go API 服务 (Gin 端口 8080)
-- `esp32-web-ide-worker-1` / `worker-2`: 编译任务分布式消费者 (Asynq)
-- `esp32-web-ide-postgres-1`: PostgreSQL 数据库 (端口 5432)
-- `esp32-web-ide-redis-1`: Redis 任务队列与缓存 (端口 6379)
-- `esp32-web-ide-nginx-1`: SSL 反向代理入口 (端口 443 / 自定义端口)
+##### 途径 B：宿主机手动编译产物并极速打包镜像（适合开发者 / 极速更新）
+若开发机已配置好 Go 和 Node.js 环境，推荐在宿主机本地编译出跨平台二进制与静态资源，并利用轻量镜像模版在数秒内完成打包：
 
-#### 3. 构建编译沙箱镜像（按需构建）
+```bash
+# 1) 宿主机编译前端静态产物 (输出到 frontend/dist)
+cd frontend
+npm install
+npm run build
+cd ..
+
+# 2) 宿主机交叉编译 Linux AMD64 静态二进制 (输出到 backend/server-linux-amd64)
+cd backend
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o server-linux-amd64 cmd/server/main.go
+cd ..
+
+# 3) 手动构建轻量镜像
+docker build -t esp32-web-ide-frontend:latest -f frontend/Dockerfile.prebuilt frontend/
+docker build -t esp32-web-ide-backend:latest -f backend/Dockerfile.prebuilt backend/
+docker tag esp32-web-ide-backend:latest esp32-web-ide-worker:latest
+
+# 4) 启动服务集群
+docker compose up -d
+```
+
+> **集群容器说明**：启动后将常驻以下 6 个服务容器：
+> - `esp32-web-ide-frontend-1`: 前端页面托管 (Nginx 端口 80)
+> - `esp32-web-ide-backend-1`: Go API 核心服务 (Gin 端口 8080)
+> - `esp32-web-ide-worker-1` / `worker-2`: 编译任务分布式消费者 (Asynq)
+> - `esp32-web-ide-postgres-1`: PostgreSQL 数据库 (端口 5432)
+> - `esp32-web-ide-redis-1`: Redis 任务队列与缓存 (端口 6379)
+> - `esp32-web-ide-nginx-1`: HTTPS 反向代理入口 (端口 443 / 55018)
+
+#### 3. 构建硬件编译沙箱镜像（按需构建）
 首次使用时，通过 Docker Compose 的 `builders` Profile 构建硬件编译沙箱镜像：
 ```bash
-# 构建 Arduino 编译沙箱（约 1.5GB）
+# 构建 Arduino 编译沙箱（预置极速 CDN 与 ESP32 核心包，约 1.5GB）
 docker compose --profile builders build arduino-builder
 
-# 构建 ESP-IDF 编译沙箱（约 3GB，按需构建）
+# 构建 ESP-IDF 编译沙箱（乐鑫官方 ESP-IDF 环境，约 3GB，按需构建）
 docker compose --profile builders build idf-builder
 ```
 
 访问 `https://<你的服务器IP或域名>` 即可开始使用。
-
-*(可选技巧：若本地已有 Go 或 Node 环境，也可以手动执行 `npm run build` 或 `go build` 后直接复制，开发时更加轻快)*
 
 ---
 
