@@ -200,6 +200,7 @@ export default function EditorPage() {
   const [buildMode, setBuildMode] = useState<'auto' | 'custom'>('auto')
   const [customCommand, setCustomCommand] = useState<string>('')
   const [selectedFramework, setSelectedFramework] = useState<string>('')
+  const [timeoutSeconds, setTimeoutSeconds] = useState<number>(1200)
   const queryClient = useQueryClient()
   const [showGitSettings, setShowGitSettings] = useState(false)
   const [gitUrlInput, setGitUrlInput] = useState('')
@@ -320,12 +321,15 @@ export default function EditorPage() {
     }
   }, [project?.custom_command])
 
-  // 当项目信息加载后，初始化当前选中的编译框架
+  // 当项目信息加载后，初始化当前选中的编译框架与超时限制
   useEffect(() => {
     if (project?.framework && !selectedFramework) {
       setSelectedFramework(project.framework)
     }
-  }, [project?.framework])
+    if (project?.build_timeout_seconds) {
+      setTimeoutSeconds(project.build_timeout_seconds)
+    }
+  }, [project?.framework, project?.build_timeout_seconds])
 
   // 当项目信息加载后，初始化 Git 仓库配置输入
   useEffect(() => {
@@ -593,6 +597,7 @@ export default function EditorPage() {
       board: currentBoard,
       board_fqbn: currentBoard,
       custom_cmd: buildMode === 'custom' ? customCommand.trim() : '',
+      timeout_seconds: timeoutSeconds,
     }),
     onMutate: () => {
       setBuildStatus('building')
@@ -1380,7 +1385,24 @@ export default function EditorPage() {
                 onSelectBoard={setSelectedBoard}
                 onViewLogs={() => setRightPanel('buildLogs')}
                 framework={currentFramework}
-                onSelectFramework={setSelectedFramework}
+                onSelectFramework={(fw) => {
+                  setSelectedFramework(fw)
+                  if (fw === 'espidf' && timeoutSeconds < 1200) {
+                    setTimeoutSeconds(1200)
+                    if (projectId) {
+                      updateProjectMutation.mutate({ framework: fw, build_timeout_seconds: 1200 })
+                    }
+                  } else if (projectId) {
+                    updateProjectMutation.mutate({ framework: fw })
+                  }
+                }}
+                timeoutSeconds={timeoutSeconds}
+                onChangeTimeoutSeconds={(sec) => {
+                  setTimeoutSeconds(sec)
+                  if (projectId) {
+                    updateProjectMutation.mutate({ build_timeout_seconds: sec })
+                  }
+                }}
                 latestBuild={latestBuild}
                 flashing={flashing}
                 flashProgress={flashProgress}
@@ -1971,6 +1993,8 @@ function BuildPanel({
   onChangeBuildMode,
   customCommand,
   onChangeCustomCommand,
+  timeoutSeconds = 1200,
+  onChangeTimeoutSeconds,
 }: {
   status: 'idle' | 'building' | 'success' | 'failed' | 'cancelled'
   progress: number
@@ -1993,6 +2017,8 @@ function BuildPanel({
   onChangeBuildMode: (mode: 'auto' | 'custom') => void
   customCommand: string
   onChangeCustomCommand: (cmd: string) => void
+  timeoutSeconds?: number
+  onChangeTimeoutSeconds: (sec: number) => void
 }) {
   const boardObj = boards.find((b: any) => (b.fqbn || b.id) === currentBoard)
   const boardName = boardObj?.name || currentBoard
@@ -2186,6 +2212,14 @@ function BuildPanel({
                 {latestBuild?.custom_command ? `自定义: ${latestBuild.custom_command}` : '默认自动编译'}
               </span>
             </div>
+            {latestBuild?.timeout_seconds ? (
+              <div className="flex justify-between items-center">
+                <span>超时限制</span>
+                <span className="text-gray-300 font-mono text-[11px]">
+                  {Math.round(latestBuild.timeout_seconds / 60)} 分钟 ({latestBuild.timeout_seconds}s)
+                </span>
+              </div>
+            ) : null}
             {latestBuild?.created_at && (
               <div className="flex justify-between items-center">
                 <span>提交时间</span>
@@ -2243,6 +2277,30 @@ function BuildPanel({
                 <option key={fqbn} value={fqbn}>{b.name}</option>
               )
             })}
+          </select>
+        </div>
+
+        {/* 编译超时限制 */}
+        <div>
+          <label className="block text-xs text-gray-400 mb-1.5 font-medium flex items-center justify-between">
+            <span>编译超时限制</span>
+            <span className="text-[10px] text-gray-400 font-normal">
+              {timeoutSeconds >= 1200 ? '适合 ESP-IDF 等大型工程' : '适合标准 Arduino 工程'}
+            </span>
+          </label>
+          <select
+            value={timeoutSeconds}
+            onChange={e => onChangeTimeoutSeconds(Number(e.target.value))}
+            disabled={status === 'building'}
+            className="w-full bg-dark-900 border border-dark-500 rounded-md px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-blue-500 disabled:opacity-50"
+          >
+            <option value={300}>5 分钟 (300 秒 - 简短测试)</option>
+            <option value={600}>10 分钟 (600 秒 - 普通 Arduino)</option>
+            <option value={900}>15 分钟 (900 秒)</option>
+            <option value={1200}>20 分钟 (1200 秒 - 默认推荐，ESP-IDF)</option>
+            <option value={1800}>30 分钟 (1800 秒 - 大型工程)</option>
+            <option value={2700}>45 分钟 (2700 秒)</option>
+            <option value={3600}>60 分钟 (3600 秒 - 极限大型工程)</option>
           </select>
         </div>
 

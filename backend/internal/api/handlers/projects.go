@@ -181,13 +181,16 @@ func (h *ProjectsHandler) ListBySession(c *gin.Context) {
 	}
 
 	resp := make([]ProjectResponse, len(projects))
-	timeout := 5 * time.Minute
 
 	for i, p := range projects {
 		resp[i].Project = p
 		var latest models.BuildRecord
 		if err := h.db.DB.Where("project_id = ?", p.ID).Order("created_at DESC").First(&latest).Error; err == nil {
-			if (latest.Status == models.BuildStatusRunning || latest.Status == models.BuildStatusPending) && time.Since(latest.CreatedAt) > timeout+30*time.Second {
+			buildTimeout := time.Duration(latest.TimeoutSeconds) * time.Second
+			if buildTimeout <= 0 {
+				buildTimeout = 20 * time.Minute
+			}
+			if (latest.Status == models.BuildStatusRunning || latest.Status == models.BuildStatusPending) && time.Since(latest.CreatedAt) > buildTimeout+30*time.Second {
 				latest.Status = models.BuildStatusFailed
 				latest.ErrorMsg = "编译超时或服务异常中断"
 				h.db.DB.Model(&latest).Updates(map[string]interface{}{
@@ -258,8 +261,9 @@ type updateProjectRequest struct {
 	Description   string `json:"description"`
 	Framework     string `json:"framework"`
 	BoardFQBN     string `json:"board_fqbn"`
-	CustomCommand string `json:"custom_command"`
-	GitURL        string `json:"git_url"`
+	CustomCommand       string `json:"custom_command"`
+	BuildTimeoutSeconds int    `json:"build_timeout_seconds"`
+	GitURL              string `json:"git_url"`
 	GitBranch     string `json:"git_branch"`
 	GitSubDir     string `json:"git_sub_dir"`
 }
@@ -310,6 +314,9 @@ func (h *ProjectsHandler) Update(c *gin.Context) {
 	}
 	if req.CustomCommand != "" {
 		updates["custom_command"] = req.CustomCommand
+	}
+	if req.BuildTimeoutSeconds > 0 {
+		updates["build_timeout_seconds"] = req.BuildTimeoutSeconds
 	}
 	if req.GitURL != "" {
 		updates["git_url"] = req.GitURL

@@ -18,6 +18,7 @@ type Project struct {
 	BoardFQBN    string        `gorm:"not null" json:"board_fqbn"`
 	SessionToken string        `gorm:"index;not null" json:"session_token"` // 浏览器 localStorage UUID
 	CustomCommand string       `json:"custom_command"`                      // 自定义编译命令
+	BuildTimeoutSeconds int    `json:"build_timeout_seconds"`               // 自定义编译超时时间（秒，0 表示使用系统默认）
 	GitURL        string       `json:"git_url"`                             // 关联的远程 Git 仓库 URL
 	GitBranch     string       `json:"git_branch"`                          // 关联的 Git 分支
 	GitSubDir     string       `json:"git_sub_dir"`                         // 仓库内的子目录路径

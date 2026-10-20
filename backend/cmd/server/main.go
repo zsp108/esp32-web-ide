@@ -55,7 +55,7 @@ func main() {
 	// 启动时清理历史残留的僵尸任务（例如服务重启导致一直处于 running 状态的任务）
 	if err := database.DB.Model(&models.BuildRecord{}).
 		Where("status IN ?", []models.BuildStatus{models.BuildStatusRunning, models.BuildStatusPending}).
-		Where("created_at < ?", time.Now().Add(-5*time.Minute)).
+		Where("created_at < ?", time.Now().Add(-1*time.Hour)).
 		Updates(map[string]interface{}{
 			"status":    models.BuildStatusFailed,
 			"error_msg": "服务重启或编译超时中断",

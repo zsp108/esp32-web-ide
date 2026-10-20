@@ -24,6 +24,7 @@ type CompilePayload struct {
 	Framework     string `json:"framework"`
 	BoardFQBN     string `json:"board_fqbn"`
 	CustomCommand string `json:"custom_command,omitempty"`
+	TimeoutSeconds int   `json:"timeout_seconds,omitempty"`
 }
 
 // CompileTaskHandler 处理编译任务。

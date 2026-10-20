@@ -75,10 +75,17 @@ func (s *BuildService) Run(ctx context.Context, buildID, projectID string) error
 		return fmt.Errorf("查找编译记录失败: %w", err)
 	}
 
+	timeoutSec := s.cfg.BuildTimeoutSeconds
+	if build.TimeoutSeconds > 0 {
+		timeoutSec = build.TimeoutSeconds
+	} else if timeoutSec <= 0 {
+		timeoutSec = 1200
+	}
+
 	// 更新为 running 状态
 	s.db.DB.Model(&build).Update("status", models.BuildStatusRunning)
 	s.publishProgress(buildID, 10, "正在准备项目源码...")
-	s.publishLog(buildID, "[INFO] 编译任务开始（后台运行中）")
+	s.publishLog(buildID, fmt.Sprintf("[INFO] 编译任务开始（后台运行中，超时上限: %d 秒 / %.1f 分钟）", timeoutSec, float64(timeoutSec)/60.0))
 
 	// 2. 准备临时源码目录
 	srcDir, err := os.MkdirTemp("", "esp32-build-*")
@@ -238,7 +245,7 @@ fi
 		Entrypoint:     entrypoint,
 		Cmd:            cmd,
 		Env:            env,
-		TimeoutSec:     s.cfg.BuildTimeoutSeconds,
+		TimeoutSec:     timeoutSec,
 		NetworkEnabled: true,
 		Binds: []string{
 			srcDir + ":/src:rw",

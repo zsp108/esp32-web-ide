@@ -61,7 +61,7 @@ func Load() (*Config, error) {
 	v.SetDefault("STORAGE_MINIO_REGION", "us-east-1")
 
 	v.SetDefault("MAX_CONCURRENT_BUILDS", 3)
-	v.SetDefault("BUILD_TIMEOUT_SECONDS", 300)
+	v.SetDefault("BUILD_TIMEOUT_SECONDS", 1200)
 	v.SetDefault("ARDUINO_BUILDER_IMAGE", "esp32-arduino-builder:latest")
 	v.SetDefault("IDF_BUILDER_IMAGE", "esp32-idf-builder:latest")
 

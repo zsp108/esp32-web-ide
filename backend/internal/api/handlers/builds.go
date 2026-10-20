@@ -57,8 +57,9 @@ type createBuildRequest struct {
 	ProjectID     string `json:"project_id" binding:"required,uuid"`
 	Framework     string `json:"framework"`
 	Board         string `json:"board"`
-	BoardFQBN     string `json:"board_fqbn"`
-	CustomCommand string `json:"custom_cmd"`
+	BoardFQBN      string `json:"board_fqbn"`
+	CustomCommand  string `json:"custom_cmd"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
 }
 
 // Create godoc
@@ -112,15 +113,30 @@ func (h *BuildsHandler) Create(c *gin.Context) {
 		h.db.DB.Model(&project).Update("custom_command", customCmd)
 	}
 
+	// 计算超时时间（优先当前请求设定，其次项目配置，再次系统全局配置，最低保底 1200 秒）
+	timeoutSec := req.TimeoutSeconds
+	if timeoutSec > 0 {
+		if timeoutSec != project.BuildTimeoutSeconds {
+			h.db.DB.Model(&project).Update("build_timeout_seconds", timeoutSec)
+		}
+	} else if project.BuildTimeoutSeconds > 0 {
+		timeoutSec = project.BuildTimeoutSeconds
+	} else if h.cfg.BuildTimeoutSeconds > 0 {
+		timeoutSec = h.cfg.BuildTimeoutSeconds
+	} else {
+		timeoutSec = 1200
+	}
+
 	// 创建编译记录
 	build := models.BuildRecord{
-		ID:            uuid.New(),
-		ProjectID:     projectID,
-		Status:        models.BuildStatusPending,
-		Framework:     framework,
-		BoardFQBN:     boardFQBN,
-		CustomCommand: customCmd,
-		CreatedAt:     time.Now(),
+		ID:             uuid.New(),
+		ProjectID:      projectID,
+		Status:         models.BuildStatusPending,
+		Framework:      framework,
+		BoardFQBN:      boardFQBN,
+		CustomCommand:  customCmd,
+		TimeoutSeconds: timeoutSec,
+		CreatedAt:      time.Now(),
 	}
 	if err := h.db.DB.Create(&build).Error; err != nil {
 		h.logger.Error("创建编译记录失败", zap.Error(err))
@@ -130,11 +146,12 @@ func (h *BuildsHandler) Create(c *gin.Context) {
 
 	// 将任务入队
 	payload, _ := json.Marshal(worker.CompilePayload{
-		BuildID:       build.ID.String(),
-		ProjectID:     projectID.String(),
-		Framework:     framework,
-		BoardFQBN:     boardFQBN,
-		CustomCommand: customCmd,
+		BuildID:        build.ID.String(),
+		ProjectID:      projectID.String(),
+		Framework:      framework,
+		BoardFQBN:      boardFQBN,
+		CustomCommand:  customCmd,
+		TimeoutSeconds: timeoutSec,
 	})
 	task := asynq.NewTask(worker.TaskCompile, payload)
 	_, err := h.asynqClient.Enqueue(task, asynq.MaxRetry(0))
@@ -169,9 +186,12 @@ func (h *BuildsHandler) Get(c *gin.Context) {
 		return
 	}
 
-	timeout := time.Duration(h.cfg.BuildTimeoutSeconds) * time.Second
+	timeout := time.Duration(build.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
-		timeout = 5 * time.Minute
+		timeout = time.Duration(h.cfg.BuildTimeoutSeconds) * time.Second
+	}
+	if timeout <= 0 {
+		timeout = 20 * time.Minute
 	}
 	if (build.Status == models.BuildStatusRunning || build.Status == models.BuildStatusPending) && time.Since(build.CreatedAt) > timeout+30*time.Second {
 		build.Status = models.BuildStatusFailed
@@ -381,9 +401,9 @@ func (h *BuildsHandler) ListByProject(c *gin.Context) {
 		return
 	}
 
-	timeout := time.Duration(h.cfg.BuildTimeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = 5 * time.Minute
+	defaultTimeout := time.Duration(h.cfg.BuildTimeoutSeconds) * time.Second
+	if defaultTimeout <= 0 {
+		defaultTimeout = 20 * time.Minute
 	}
 
 	type BuildItem struct {
@@ -395,7 +415,11 @@ func (h *BuildsHandler) ListByProject(c *gin.Context) {
 
 	result := make([]BuildItem, len(builds))
 	for i, b := range builds {
-		if (b.Status == models.BuildStatusRunning || b.Status == models.BuildStatusPending) && time.Since(b.CreatedAt) > timeout+30*time.Second {
+		bTimeout := time.Duration(b.TimeoutSeconds) * time.Second
+		if bTimeout <= 0 {
+			bTimeout = defaultTimeout
+		}
+		if (b.Status == models.BuildStatusRunning || b.Status == models.BuildStatusPending) && time.Since(b.CreatedAt) > bTimeout+30*time.Second {
 			b.Status = models.BuildStatusFailed
 			b.ErrorMsg = "编译超时或服务异常中断"
 			h.db.DB.Model(&models.BuildRecord{}).Where("id = ?", b.ID).Updates(map[string]interface{}{

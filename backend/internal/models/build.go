@@ -36,6 +36,7 @@ type BuildRecord struct {
 	Framework     string      `json:"framework"` // arduino | espidf
 	BoardFQBN     string      `json:"board_fqbn"`
 	CustomCommand string      `json:"custom_command,omitempty"` // 自定义编译命令
+	TimeoutSeconds int        `json:"timeout_seconds,omitempty"`// 该任务的编译超时秒数
 	BinStorageKey string      `json:"bin_storage_key"`          // 存储后端中的对象键
 	BinSizeBytes  int64       `json:"bin_size_bytes"`
 	FlashSegments string      `gorm:"type:text" json:"flash_segments,omitempty"` // JSON 格式存储的分段烧录清单

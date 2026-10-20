@@ -25,7 +25,7 @@ export const projectsApi = {
   create: (data: { name: string; framework: string; board_fqbn: string }) =>
     apiClient.post('/projects', data).then(r => r.data),
   get: (id: string) => apiClient.get(`/projects/${id}`).then(r => r.data),
-  update: (id: string, data: { name?: string; description?: string; framework?: string; board_fqbn?: string; custom_command?: string; git_url?: string; git_branch?: string; git_sub_dir?: string }) =>
+  update: (id: string, data: { name?: string; description?: string; framework?: string; board_fqbn?: string; custom_command?: string; build_timeout_seconds?: number; git_url?: string; git_branch?: string; git_sub_dir?: string }) =>
     apiClient.put(`/projects/${id}`, data).then(r => r.data),
   list: () => apiClient.get('/projects').then(r => r.data),
   delete: (id: string) => apiClient.delete(`/projects/${id}`).then(r => r.data),
@@ -54,7 +54,7 @@ export const filesApi = {
 }
 
 export const buildsApi = {
-  create: (data: { project_id: string; framework?: string; board?: string; board_fqbn?: string; custom_cmd?: string }) =>
+  create: (data: { project_id: string; framework?: string; board?: string; board_fqbn?: string; custom_cmd?: string; timeout_seconds?: number }) =>
     apiClient.post('/builds', data).then(r => r.data),
   get: (id: string) => apiClient.get(`/builds/${id}`).then(r => r.data),
   listByProject: (projectId: string) => apiClient.get(`/projects/${projectId}/builds`).then(r => r.data),

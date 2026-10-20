@@ -118,7 +118,7 @@ func (d *DockerService) RunBuild(ctx context.Context, opts BuildOptions) error {
 	// 超时控制
 	timeout := time.Duration(opts.TimeoutSec) * time.Second
 	if timeout == 0 {
-		timeout = 300 * time.Second
+		timeout = 1200 * time.Second
 	}
 	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
