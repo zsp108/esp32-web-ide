@@ -1011,7 +1011,7 @@ export default function EditorPage() {
   return (
     <div className="h-screen flex flex-col bg-dark-900 text-gray-100 overflow-hidden">
       {/* Top bar */}
-      <header className="flex items-center gap-3 border-b border-dark-600 bg-dark-800 px-4 py-2 shrink-0">
+      <header className="flex items-center flex-wrap gap-x-3 gap-y-1.5 border-b border-dark-600 bg-dark-800 px-4 py-2 shrink-0">
         <button
           onClick={() => navigate('/')}
           className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white hover:bg-dark-700 border border-dark-500 rounded px-2.5 py-1 transition-colors"
@@ -1023,18 +1023,18 @@ export default function EditorPage() {
 
         <div className="h-4 w-px bg-dark-600 mx-1" />
 
-        <div className="flex items-center gap-2">
-          <Cpu size={18} className="text-blue-400" />
-          <span className="font-semibold text-sm">{project?.name ?? 'ESP32 Web IDE'}</span>
+        <div className="flex items-center gap-2 min-w-0">
+          <Cpu size={18} className="text-blue-400 shrink-0" />
+          <span className="font-semibold text-sm truncate max-w-[180px]" title={project?.name ?? 'ESP32 Web IDE'}>{project?.name ?? 'ESP32 Web IDE'}</span>
           {project && (
-            <div className="flex items-center gap-2 ml-2">
+            <div className="flex items-center flex-wrap gap-2 ml-2">
               <span className="text-xs text-gray-400 bg-dark-700 px-2 py-0.5 rounded font-mono uppercase">
                 {currentFramework}
               </span>
               <select
                 value={currentBoard}
                 onChange={e => setSelectedBoard(e.target.value)}
-                className="text-xs bg-dark-700 hover:bg-dark-600 border border-dark-500 rounded px-2.5 py-1 text-gray-200 focus:outline-none focus:border-blue-500 cursor-pointer transition-colors"
+                className="text-xs bg-dark-700 hover:bg-dark-600 border border-dark-500 rounded px-2.5 py-1 text-gray-200 focus:outline-none focus:border-blue-500 cursor-pointer transition-colors max-w-[220px]"
                 title="切换目标开发板"
               >
                 {(boards.length > 0 ? boards : [
