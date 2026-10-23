@@ -24,7 +24,7 @@ export const boardsApi = {
 export const projectsApi = {
   create: (data: { name: string; framework: string; board_fqbn: string }) =>
     apiClient.post('/projects', data).then(r => r.data),
-  get: (id: string) => apiClient.get(`/projects/${id}`).then(r => r.data),
+  get: (id: string) => apiClient.get(`/projects/${id}`, { params: { include_files: false }, timeout: 15000 }).then(r => r.data),
   update: (id: string, data: { name?: string; description?: string; framework?: string; board_fqbn?: string; custom_command?: string; build_timeout_seconds?: number; git_url?: string; git_branch?: string; git_sub_dir?: string }) =>
     apiClient.put(`/projects/${id}`, data).then(r => r.data),
   list: () => apiClient.get('/projects').then(r => r.data),

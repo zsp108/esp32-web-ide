@@ -307,9 +307,11 @@ export default function EditorPage() {
     setExpandedFolders({})
   }
 
-  const { data: project } = useQuery({
+  const { data: project, isPending: projectPending, isError: projectError, refetch: refetchProject } = useQuery({
     queryKey: ['project', projectId],
     queryFn: () => projectsApi.get(projectId!),
+    // 首页已有基本信息时立即展示；详情仍在后台请求最新配置。
+    placeholderData: () => queryClient.getQueryData<any[]>(['projects'])?.find(p => p.id === projectId),
     enabled: !!projectId,
   })
 
@@ -1011,7 +1013,7 @@ export default function EditorPage() {
   return (
     <div className="h-screen flex flex-col bg-dark-900 text-gray-100 overflow-hidden">
       {/* Top bar */}
-      <header className="flex items-center flex-wrap gap-x-3 gap-y-1.5 border-b border-dark-600 bg-dark-800 px-4 py-2 shrink-0">
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-dark-600 bg-dark-800 px-4 py-2 shrink-0">
         <button
           onClick={() => navigate('/')}
           className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-white hover:bg-dark-700 border border-dark-500 rounded px-2.5 py-1 transition-colors"
@@ -1023,83 +1025,10 @@ export default function EditorPage() {
 
         <div className="h-4 w-px bg-dark-600 mx-1" />
 
-        <div className="flex items-center gap-2 min-w-0">
+        <div className="flex items-center gap-2 min-w-0 flex-1">
           <Cpu size={18} className="text-blue-400 shrink-0" />
-          <span className="font-semibold text-sm truncate max-w-[180px]" title={project?.name ?? 'ESP32 Web IDE'}>{project?.name ?? 'ESP32 Web IDE'}</span>
-          {project && (
-            <div className="flex items-center flex-wrap gap-2 ml-2">
-              <span className="text-xs text-gray-400 bg-dark-700 px-2 py-0.5 rounded font-mono uppercase">
-                {currentFramework}
-              </span>
-              <select
-                value={currentBoard}
-                onChange={e => setSelectedBoard(e.target.value)}
-                className="text-xs bg-dark-700 hover:bg-dark-600 border border-dark-500 rounded px-2.5 py-1 text-gray-200 focus:outline-none focus:border-blue-500 cursor-pointer transition-colors max-w-[220px]"
-                title="切换目标开发板"
-              >
-                {(boards.length > 0 ? boards : [
-                  { fqbn: 'esp32:esp32:esp32', name: 'ESP32 DevKitC' },
-                  { fqbn: 'esp32:esp32:esp32s3', name: 'ESP32-S3 DevKit' },
-                  { fqbn: 'esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi', name: 'ESP32-S3 N16R8 (16MB Flash / 8MB OPI PSRAM)' },
-                  { fqbn: 'esp32:esp32:esp32c3', name: 'ESP32-C3' },
-                  { fqbn: 'esp32:esp32:esp32s2', name: 'ESP32-S2' },
-                  { fqbn: 'waveshare:esp32s3:touch_amoled_175c', name: 'Waveshare ESP32-S3-Touch-AMOLED-1.75C' },
-                ]).map((b: any) => {
-                  const fqbn = b.fqbn || b.id || ''
-                  return (
-                    <option key={fqbn} value={fqbn}>{b.name}</option>
-                  )
-                })}
-              </select>
-
-              {/* Git 状态与同步快捷组件 */}
-              {project?.git_url ? (
-                <div className="flex items-center gap-1.5 bg-dark-700/80 border border-dark-500 rounded px-2 py-1 text-xs text-gray-300">
-                  <GitBranch size={13} className="text-purple-400 shrink-0" />
-                  <span className="font-mono text-gray-200 truncate max-w-[120px]" title={`远程仓库: ${project.git_url}\n分支: ${project.git_branch || 'main'}`}>
-                    {project.git_branch || 'main'}
-                  </span>
-                  {project.git_commit_hash && (
-                    <span className="text-gray-400 font-mono text-[11px]" title={`最后同步 Commit: ${project.git_commit_hash}`}>
-                      #{project.git_commit_hash}
-                    </span>
-                  )}
-                  <button
-                    onClick={() => {
-                      if (window.confirm(`确定要从远程仓库拉取最新代码吗？\n仓库: ${project.git_url}\n分支: ${project.git_branch || 'main'}\n注意：这将从远程更新/覆盖项目文件。`)) {
-                        gitPullMutation.mutate()
-                      }
-                    }}
-                    disabled={gitPullMutation.isPending}
-                    className="flex items-center gap-1 ml-1 text-xs bg-purple-900/40 hover:bg-purple-800/60 text-purple-300 border border-purple-700/50 rounded px-2 py-0.5 transition-colors disabled:opacity-50"
-                    title="从远程仓库拉取最新代码并同步到 Web IDE (Git Pull)"
-                  >
-                    <RefreshCw size={11} className={clsx(gitPullMutation.isPending && "animate-spin")} />
-                    <span>{gitPullMutation.isPending ? '同步中...' : 'Git Pull'}</span>
-                  </button>
-                  <button
-                    onClick={() => setShowGitSettings(true)}
-                    className="p-1 text-gray-400 hover:text-white rounded hover:bg-dark-600 transition-colors ml-0.5"
-                    title="Git 仓库配置"
-                  >
-                    <Settings size={12} />
-                  </button>
-                </div>
-              ) : (
-                <button
-                  onClick={() => setShowGitSettings(true)}
-                  className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-purple-300 bg-dark-700/50 hover:bg-dark-700 border border-dark-600 hover:border-purple-800/50 rounded px-2.5 py-1 transition-colors"
-                  title="关联 Git 远程仓库以启用一键同步更新 (Git Pull)"
-                >
-                  <GitBranch size={13} />
-                  <span>绑定 Git</span>
-                </button>
-              )}
-            </div>
-          )}
+          <span className="font-semibold text-sm truncate" title={project?.name ?? 'ESP32 Web IDE'}>{project?.name ?? 'ESP32 Web IDE'}</span>
         </div>
-
-        <div className="flex-1" />
 
         {/* 顶部后台编译状态提示 */}
         {buildStatus === 'building' && (
@@ -1159,7 +1088,7 @@ export default function EditorPage() {
         {/* Build button */}
         <button
           onClick={handleBuild}
-          disabled={buildStatus === 'building' || !projectId}
+          disabled={buildStatus === 'building' || !projectId || !project}
           className="flex items-center gap-1.5 bg-green-700 hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs px-4 py-1.5 rounded font-medium transition-colors"
         >
           {buildStatus === 'building'
@@ -1180,6 +1109,103 @@ export default function EditorPage() {
           </button>
         )}
       </header>
+
+      <section aria-label="项目工具栏" className="min-h-[46px] shrink-0 flex items-center border-b border-dark-600 bg-dark-850 px-4 py-2">
+          {project ? (
+            <div className="flex flex-wrap items-center gap-3 min-w-0 w-full">
+              <div className="flex items-center gap-2 min-w-0 max-w-full">
+                <span className="text-xs text-gray-500 shrink-0">编译配置</span>
+                <select
+                  aria-label="编译框架"
+                  value={currentFramework}
+                  onChange={e => setSelectedFramework(e.target.value)}
+                  disabled={buildStatus === 'building'}
+                  className="text-xs bg-dark-700 border border-dark-500 rounded px-2 py-1 text-gray-200 disabled:opacity-50"
+                >
+                  <option value="arduino">Arduino</option>
+                  <option value="espidf">ESP-IDF</option>
+                </select>
+                <select
+                  aria-label="目标开发板"
+                  disabled={buildStatus === 'building'}
+                  value={currentBoard}
+                  onChange={e => setSelectedBoard(e.target.value)}
+                  className="min-w-0 max-w-[min(40vw,24rem)] text-xs bg-dark-700 hover:bg-dark-600 border border-dark-500 rounded px-2.5 py-1 text-gray-200 focus:outline-none focus:border-blue-500 cursor-pointer transition-colors"
+                  title="切换目标开发板"
+                >
+                  {(boards.length > 0 ? boards : [
+                    { fqbn: 'esp32:esp32:esp32', name: 'ESP32 DevKitC' },
+                    { fqbn: 'esp32:esp32:esp32s3', name: 'ESP32-S3 DevKit' },
+                    { fqbn: 'esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi', name: 'ESP32-S3 N16R8 (16MB Flash / 8MB OPI PSRAM)' },
+                    { fqbn: 'esp32:esp32:esp32c3', name: 'ESP32-C3' },
+                    { fqbn: 'esp32:esp32:esp32s2', name: 'ESP32-S2' },
+                    { fqbn: 'waveshare:esp32s3:touch_amoled_175c', name: 'Waveshare ESP32-S3-Touch-AMOLED-1.75C' },
+                  ]).map((b: any) => {
+                    const fqbn = b.fqbn || b.id || ''
+                    return (
+                      <option key={fqbn} value={fqbn}>{b.name}</option>
+                    )
+                  })}
+                </select>
+
+              </div>
+              {/* Git 状态与同步快捷组件 */}
+              {project?.git_url ? (
+                <div className="flex items-center gap-1.5 min-w-0 max-w-full bg-dark-700/80 border border-dark-500 rounded px-2 py-1 text-xs text-gray-300">
+                  <GitBranch size={13} className="text-purple-400 shrink-0" />
+                  <span className="font-mono text-gray-200 truncate max-w-[120px]" title={`远程仓库: ${project.git_url}\n分支: ${project.git_branch || 'main'}`}>
+                    {project.git_branch || 'main'}
+                  </span>
+                  {project.git_commit_hash && (
+                    <span className="text-gray-400 font-mono text-[11px]" title={`最后同步 Commit: ${project.git_commit_hash}`}>
+                      #{project.git_commit_hash.slice(0, 7)}
+                    </span>
+                  )}
+                  <button
+                    onClick={() => {
+                      if (window.confirm(`确定要从远程仓库拉取最新代码吗？\n仓库: ${project.git_url}\n分支: ${project.git_branch || 'main'}\n注意：这将从远程更新/覆盖项目文件。`)) {
+                        gitPullMutation.mutate()
+                      }
+                    }}
+                    disabled={gitPullMutation.isPending}
+                    className="flex items-center gap-1 ml-1 text-xs bg-purple-900/40 hover:bg-purple-800/60 text-purple-300 border border-purple-700/50 rounded px-2 py-0.5 transition-colors disabled:opacity-50"
+                    title="从远程仓库拉取最新代码并同步到 Web IDE (Git Pull)"
+                  >
+                    <RefreshCw size={11} className={clsx(gitPullMutation.isPending && "animate-spin")} />
+                    <span>{gitPullMutation.isPending ? '同步中...' : 'Git Pull'}</span>
+                  </button>
+                  <button
+                    onClick={() => setShowGitSettings(true)}
+                    className="p-1 text-gray-400 hover:text-white rounded hover:bg-dark-600 transition-colors ml-0.5"
+                    title="Git 仓库配置"
+                  >
+                    <Settings size={12} />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setShowGitSettings(true)}
+                  className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-purple-300 bg-dark-700/50 hover:bg-dark-700 border border-dark-600 hover:border-purple-800/50 rounded px-2.5 py-1 transition-colors"
+                  title="关联 Git 远程仓库以启用一键同步更新 (Git Pull)"
+                >
+                  <GitBranch size={13} />
+                  <span>绑定 Git</span>
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 text-xs text-gray-400" role="status">
+              {projectError ? <>
+                <AlertTriangle size={14} className="text-amber-400" />
+                <span>项目配置加载失败</span>
+                <button onClick={() => refetchProject()} className="text-blue-400 hover:text-blue-300">重试</button>
+              </> : <>
+                <Loader2 size={14} className="animate-spin" />
+                <span>{projectPending ? '正在加载编译配置与 Git 仓库…' : '暂无项目配置'}</span>
+              </>}
+            </div>
+          )}
+      </section>
 
       <div className="flex flex-1 overflow-hidden">
         {/* File tree */}

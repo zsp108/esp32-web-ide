@@ -150,7 +150,12 @@ func (h *ProjectsHandler) Get(c *gin.Context) {
 	}
 
 	var project models.Project
-	if err := h.db.DB.Preload("Files").First(&project, "id = ?", id).Error; err != nil {
+	// 编辑器的基本配置不需要源码；保留默认行为以兼容已有 API 调用方。
+	query := h.db.DB
+	if c.Query("include_files") != "false" {
+		query = query.Preload("Files")
+	}
+	if err := query.First(&project, "id = ?", id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "项目不存在"})
 		return
 	}
